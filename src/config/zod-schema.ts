@@ -148,6 +148,36 @@ export const OpenClawSchema = z
           })
           .strict()
           .optional(),
+        mlflow: z
+          .object({
+            enabled: z.boolean().optional(),
+            trackingUri: z.string().optional(),
+            experimentName: z.string().optional(),
+            artifactLocation: z.string().optional(),
+            tags: z.record(z.string(), z.string()).optional(),
+            trackTokenUsage: z.boolean().optional(),
+            trackCosts: z.boolean().optional(),
+            trackLatency: z.boolean().optional(),
+            trackTraces: z.boolean().optional(),
+            batchSize: z.number().int().nonnegative().optional(),
+            flushIntervalMs: z.number().int().nonnegative().optional(),
+          })
+          .strict()
+          .optional(),
+        langfuse: z
+          .object({
+            enabled: z.boolean().optional(),
+            publicKey: z.string().optional(),
+            secretKey: z.string().optional(),
+            baseUrl: z.string().optional(),
+            release: z.string().optional(),
+            environment: z.string().optional(),
+            flushAt: z.number().int().nonnegative().optional(),
+            flushInterval: z.number().int().nonnegative().optional(),
+            requestTimeout: z.number().int().nonnegative().optional(),
+          })
+          .strict()
+          .optional(),
       })
       .strict()
       .optional(),

@@ -1,0 +1,8 @@
+{
+  "id": "diagnostics-mlflow",
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {}
+  }
+}
