@@ -21,6 +21,10 @@ COPY ui/package.json ./ui/package.json
 COPY patches ./patches
 COPY scripts ./scripts
 
+# Copy extension package.json files for dependency resolution
+# NOTE: If lockfile is out of sync, run 'pnpm install' locally and commit updated pnpm-lock.yaml
+COPY extensions/ ./extensions/
+
 RUN pnpm install --frozen-lockfile
 
 COPY . .
@@ -37,6 +41,13 @@ RUN chown -R node:node /app
 # Security hardening: Run as non-root user
 # The node:22-bookworm image includes a 'node' user (uid 1000)
 # This reduces the attack surface by preventing container escape via root privileges
+
+# Create .openclaw directory with proper permissions for OpenShift (arbitrary UID)
+# OpenShift runs containers with random UIDs in the root group (GID 0)
+RUN mkdir -p /home/node/.openclaw/workspace && \
+    chown -R node:0 /home/node/.openclaw && \
+    chmod -R g=u /home/node/.openclaw
+
 USER node
 
 # Start gateway server with default config.

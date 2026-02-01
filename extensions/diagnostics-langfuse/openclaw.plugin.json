@@ -1,5 +1,5 @@
 {
-  "id": "diagnostics-otel",
+  "id": "diagnostics-langfuse",
   "configSchema": {
     "type": "object",
     "additionalProperties": false,

@@ -133,12 +133,42 @@ export type DiagnosticsCacheTraceConfig = {
   includeSystem?: boolean;
 };
 
+export type DiagnosticsMlflowConfig = {
+  enabled?: boolean;
+  trackingUri?: string;
+  experimentName?: string;
+  artifactLocation?: string;
+  tags?: Record<string, string>;
+  trackTokenUsage?: boolean;
+  trackCosts?: boolean;
+  trackLatency?: boolean;
+  trackTraces?: boolean;
+  batchSize?: number;
+  flushIntervalMs?: number;
+};
+
+export type DiagnosticsLangfuseConfig = {
+  enabled?: boolean;
+  publicKey?: string;
+  secretKey?: string;
+  baseUrl?: string;
+  release?: string;
+  environment?: string;
+  flushAt?: number;
+  flushInterval?: number;
+  requestTimeout?: number;
+};
+
 export type DiagnosticsConfig = {
   enabled?: boolean;
   /** Optional ad-hoc diagnostics flags (e.g. "telegram.http"). */
   flags?: string[];
   otel?: DiagnosticsOtelConfig;
   cacheTrace?: DiagnosticsCacheTraceConfig;
+  /** MLflow configuration (defined by diagnostics-mlflow plugin). */
+  mlflow?: DiagnosticsMlflowConfig;
+  /** Langfuse configuration (defined by diagnostics-langfuse plugin). */
+  langfuse?: DiagnosticsLangfuseConfig;
 };
 
 export type WebReconnectConfig = {

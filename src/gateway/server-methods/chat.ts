@@ -14,6 +14,12 @@ import {
   extractShortModelName,
   type ResponsePrefixContext,
 } from "../../auto-reply/reply/response-prefix-template.js";
+import { isDiagnosticsEnabled } from "../../infra/diagnostic-events.js";
+import {
+  logMessageQueued,
+  logMessageProcessed,
+  logSessionStateChange,
+} from "../../logging/diagnostic.js";
 import { resolveSendPolicy } from "../../sessions/send-policy.js";
 import { INTERNAL_MESSAGE_CHANNEL } from "../../utils/message-channel.js";
 import {
@@ -498,6 +504,25 @@ export const chatHandlers: GatewayRequestHandlers = {
         },
       });
 
+      // Emit diagnostic events for webchat messages
+      const diagnosticsEnabled = isDiagnosticsEnabled(cfg);
+      const startTime = diagnosticsEnabled ? Date.now() : 0;
+      const channel = INTERNAL_MESSAGE_CHANNEL;
+
+      // Explicit logging for webchat message processing
+      context.logGateway.info(
+        `chat.send: sessionKey=${p.sessionKey} runId=${clientRunId} message="${parsedMessage.slice(0, 100)}${parsedMessage.length > 100 ? "..." : ""}"`,
+      );
+
+      if (diagnosticsEnabled && p.sessionKey) {
+        logMessageQueued({ sessionKey: p.sessionKey, channel, source: "webchat" });
+        logSessionStateChange({
+          sessionKey: p.sessionKey,
+          state: "processing",
+          reason: "webchat_message_start",
+        });
+      }
+
       let agentRunStarted = false;
       void dispatchInboundMessage({
         ctx,
@@ -562,6 +587,30 @@ export const chatHandlers: GatewayRequestHandlers = {
               message,
             });
           }
+
+          // Emit diagnostic event for successful message processing
+          const durationMs = Date.now() - startTime;
+          context.logGateway.info(
+            `chat.send completed: sessionKey=${p.sessionKey} runId=${clientRunId} duration=${durationMs}ms`,
+          );
+
+          if (diagnosticsEnabled && p.sessionKey) {
+            logMessageProcessed({
+              channel,
+              chatId: p.sessionKey,
+              messageId: clientRunId,
+              sessionKey: p.sessionKey,
+              durationMs,
+              outcome: "completed",
+              reason: "webchat_success",
+            });
+            logSessionStateChange({
+              sessionKey: p.sessionKey,
+              state: "idle",
+              reason: "webchat_message_complete",
+            });
+          }
+
           context.dedupe.set(`chat:${clientRunId}`, {
             ts: Date.now(),
             ok: true,
@@ -569,6 +618,30 @@ export const chatHandlers: GatewayRequestHandlers = {
           });
         })
         .catch((err) => {
+          // Emit diagnostic event for error
+          const durationMs = Date.now() - startTime;
+          context.logGateway.error(
+            `chat.send error: sessionKey=${p.sessionKey} runId=${clientRunId} duration=${durationMs}ms error="${String(err)}"`,
+          );
+
+          if (diagnosticsEnabled && p.sessionKey) {
+            logMessageProcessed({
+              channel,
+              chatId: p.sessionKey,
+              messageId: clientRunId,
+              sessionKey: p.sessionKey,
+              durationMs,
+              outcome: "error",
+              reason: "webchat_dispatch_error",
+              error: String(err),
+            });
+            logSessionStateChange({
+              sessionKey: p.sessionKey,
+              state: "idle",
+              reason: "webchat_message_error",
+            });
+          }
+
           const error = errorShape(ErrorCodes.UNAVAILABLE, String(err));
           context.dedupe.set(`chat:${clientRunId}`, {
             ts: Date.now(),
