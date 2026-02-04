@@ -1,5 +1,6 @@
 import { createJiti } from "jiti";
 import fs from "node:fs";
+import { createRequire } from "node:module";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { OpenClawConfig } from "../config/config.js";
@@ -301,14 +302,17 @@ export function loadOpenClawPlugins(options: PluginLoadOptions = {}): PluginRegi
       const distIndexJs = path.join(candidateDir, "dist", "index.js");
 
       if (fs.existsSync(distIndexJs)) {
-        console.log(`[plugins] ${record.id}: using pre-built ${distIndexJs}`);
+        console.log(`[plugins] ${record.id}: using pre-built ${distIndexJs} via native require()`);
         logger.debug?.(`[plugins] ${record.id}: using pre-built ${distIndexJs}`);
-        moduleSource = distIndexJs;
+        // Use native require() for pre-built JS to avoid jiti creating separate module instances
+        const nodeRequire = createRequire(import.meta.url);
+        mod = nodeRequire(distIndexJs) as OpenClawPluginModule;
       } else {
-        console.log(`[plugins] ${record.id}: dist/index.js not found, using TypeScript source`);
+        console.log(
+          `[plugins] ${record.id}: dist/index.js not found, using TypeScript source via jiti`,
+        );
+        mod = jiti(moduleSource) as OpenClawPluginModule;
       }
-
-      mod = jiti(moduleSource) as OpenClawPluginModule;
     } catch (err) {
       logger.error(`[plugins] ${record.id} failed to load from ${record.source}: ${String(err)}`);
       record.status = "error";
