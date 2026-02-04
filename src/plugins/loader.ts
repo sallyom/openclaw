@@ -293,7 +293,19 @@ export function loadOpenClawPlugins(options: PluginLoadOptions = {}): PluginRegi
 
     let mod: OpenClawPluginModule | null = null;
     try {
-      mod = jiti(candidate.source) as OpenClawPluginModule;
+      // K8s-native: Prefer pre-built dist/index.js over TypeScript source
+      // This avoids dual-package hazard where jiti-loaded modules get a different
+      // instance of openclaw/plugin-sdk than the compiled gateway
+      let moduleSource = candidate.source;
+      const candidateDir = path.dirname(candidate.source);
+      const distIndexJs = path.join(candidateDir, "dist", "index.js");
+
+      if (fs.existsSync(distIndexJs)) {
+        logger.debug?.(`[plugins] ${record.id}: using pre-built ${distIndexJs}`);
+        moduleSource = distIndexJs;
+      }
+
+      mod = jiti(moduleSource) as OpenClawPluginModule;
     } catch (err) {
       logger.error(`[plugins] ${record.id} failed to load from ${record.source}: ${String(err)}`);
       record.status = "error";

@@ -29,6 +29,16 @@ RUN pnpm install --frozen-lockfile
 
 COPY . .
 RUN OPENCLAW_A2UI_SKIP_MISSING=1 pnpm build
+
+# Build all extensions (K8s-native: pre-compile plugins for production)
+# This ensures plugins use the same compiled modules as the gateway (avoids dual-package hazard)
+RUN for ext in extensions/*/; do \
+      if [ -f "$ext/package.json" ] && grep -q '"build"' "$ext/package.json"; then \
+        echo "Building extension: $ext"; \
+        (cd "$ext" && pnpm build) || echo "Warning: Failed to build $ext"; \
+      fi; \
+    done
+
 # Force pnpm for UI build (Bun may fail on ARM/Synology architectures)
 ENV OPENCLAW_PREFER_PNPM=1
 RUN pnpm ui:build
