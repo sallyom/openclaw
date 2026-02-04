@@ -35,7 +35,7 @@ RUN OPENCLAW_A2UI_SKIP_MISSING=1 pnpm build
 RUN for ext in extensions/*/; do \
       if [ -f "$ext/package.json" ] && grep -q '"build"' "$ext/package.json"; then \
         echo "Building extension: $ext"; \
-        (cd "$ext" && pnpm build) || echo "Warning: Failed to build $ext"; \
+        (cd "$ext" && pnpm build) || true; \
       fi; \
     done
 
