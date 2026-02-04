@@ -317,6 +317,10 @@ export function createDiagnosticsMlflowService(): OpenClawPluginService {
                     queue_depth: evt.queueDepth,
                   },
                   attributes: {
+                    // MLflow session grouping (official metadata keys)
+                    "mlflow.trace.session": evt.sessionKey,
+                    "mlflow.trace.user": evt.channel || "unknown",  // Use channel as user identifier
+                    // OpenClaw-specific attributes
                     "openclaw.sessionKey": evt.sessionKey,
                     "openclaw.channel": evt.channel || "unknown",
                     "openclaw.source": evt.source,
