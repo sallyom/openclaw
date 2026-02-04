@@ -14,6 +14,8 @@ export type DiagnosticUsageEvent = DiagnosticBaseEvent & {
   channel?: string;
   provider?: string;
   model?: string;
+  /** User's input prompt/message text. */
+  prompt?: string;
   usage: {
     input?: number;
     output?: number;
