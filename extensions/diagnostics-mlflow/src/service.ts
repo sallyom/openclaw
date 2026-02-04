@@ -12,7 +12,7 @@ import type {
 } from "openclaw/plugin-sdk";
 import { onAgentEvent, onDiagnosticEvent } from "openclaw/plugin-sdk";
 import * as mlflow from "mlflow-tracing";
-import { flushTraces } from "mlflow-tracing";
+import { flushTraces, SpanStatusCode } from "mlflow-tracing";
 
 interface MLFlowConfig {
   enabled?: boolean;
@@ -277,7 +277,7 @@ export function createDiagnosticsMlflowService(): OpenClawPluginService {
             tracingInitialized = true;
             ctx.logger.info("MLflow tracing SDK initialized");
           } catch (error) {
-            ctx.logger.warn("Failed to initialize MLflow tracing SDK:", error);
+            ctx.logger.warn(`Failed to initialize MLflow tracing SDK: ${String(error)}`);
             ctx.logger.warn("Continuing with metrics-only tracking");
           }
         }
@@ -330,10 +330,10 @@ export function createDiagnosticsMlflowService(): OpenClawPluginService {
                   },
                 });
 
-                ctx.logger.info(`MLflow span created: spanId=${rootSpan.spanId} requestId=${rootSpan.requestId}`);
+                ctx.logger.info(`MLflow span created: spanId=${rootSpan.spanId} traceId=${rootSpan.traceId}`);
 
                 activeTraces.set(evt.sessionKey, {
-                  requestId: rootSpan.requestId,
+                  requestId: rootSpan.traceId,
                   startedAt: evt.ts || Date.now(),
                   sessionKey: evt.sessionKey,
                   channel: evt.channel,
@@ -345,10 +345,10 @@ export function createDiagnosticsMlflowService(): OpenClawPluginService {
                 });
 
                 ctx.logger.info(
-                  `MLflow trace started: requestId=${rootSpan.requestId} sessionKey=${evt.sessionKey} channel=${evt.channel || "unknown"}`,
+                  `MLflow trace started: traceId=${rootSpan.traceId} sessionKey=${evt.sessionKey} channel=${evt.channel || "unknown"}`,
                 );
               } catch (error) {
-                ctx.logger.error("Failed to start message trace:", error);
+                ctx.logger.error(`Failed to start message trace: ${String(error)}`);
               }
               break;
             }
@@ -420,10 +420,10 @@ export function createDiagnosticsMlflowService(): OpenClawPluginService {
                         cost_usd: evt.costUsd,
                         duration_ms: evt.durationMs,
                       },
-                      status: "OK",
+                      status: SpanStatusCode.OK,
                     });
                   } catch (error) {
-                    ctx.logger.warn("Failed to create model span:", error);
+                    ctx.logger.warn(`Failed to create model span: ${String(error)}`);
                   }
                 }
               }
@@ -452,7 +452,7 @@ export function createDiagnosticsMlflowService(): OpenClawPluginService {
                         trace_id: trace.requestId,
                         span_id: trace.rootSpan.span.spanId,
                       },
-                      status: evt.outcome === "error" ? "ERROR" : "OK",
+                      status: evt.outcome === "error" ? SpanStatusCode.ERROR : SpanStatusCode.OK,
                       ...(evt.error && { statusMessage: evt.error }),
                     });
 
@@ -463,10 +463,10 @@ export function createDiagnosticsMlflowService(): OpenClawPluginService {
 
                     // Immediately flush traces to MLflow (don't wait for timer)
                     flushTracesIfNeeded().catch((err) =>
-                      ctx.logger.warn("Failed to flush traces after completion:", err),
+                      ctx.logger.warn(`Failed to flush traces after completion: ${String(err)}`),
                     );
                   } catch (error) {
-                    ctx.logger.error("Failed to end message span:", error);
+                    ctx.logger.error(`Failed to end message span: ${String(error)}`);
                   }
                   activeTraces.delete(evt.sessionKey);
                 } else {
@@ -538,7 +538,7 @@ export function createDiagnosticsMlflowService(): OpenClawPluginService {
                       startedAt: evt.ts,
                     });
                   } catch (error) {
-                    ctx.logger.warn(`Failed to start tool span for ${toolName}:`, error);
+                    ctx.logger.warn(`Failed to start tool span for ${toolName}: ${String(error)}`);
                   }
                 } else if (phase === "end") {
                   const activeSpan = activeSpans.get(toolCallId);
@@ -546,11 +546,11 @@ export function createDiagnosticsMlflowService(): OpenClawPluginService {
                     try {
                       activeSpan.span.end({
                         outputs: { result: data.result },
-                        status: data.error ? "ERROR" : "OK",
+                        status: data.error ? SpanStatusCode.ERROR : SpanStatusCode.OK,
                         ...(data.error && { statusMessage: data.error }),
                       });
                     } catch (error) {
-                      ctx.logger.warn(`Failed to end tool span for ${toolName}:`, error);
+                      ctx.logger.warn(`Failed to end tool span for ${toolName}: ${String(error)}`);
                     }
                     activeSpans.delete(toolCallId);
                   }
@@ -588,7 +588,7 @@ export function createDiagnosticsMlflowService(): OpenClawPluginService {
                       startedAt: data.startedAt || evt.ts,
                     });
                   } catch (error) {
-                    ctx.logger.warn("Failed to start lifecycle span:", error);
+                    ctx.logger.warn(`Failed to start lifecycle span: ${String(error)}`);
                   }
                 } else if (data.phase === "end") {
                   const activeSpan = activeSpans.get(spanId);
@@ -597,11 +597,11 @@ export function createDiagnosticsMlflowService(): OpenClawPluginService {
                       const durationMs = (data.endedAt || evt.ts) - activeSpan.startedAt;
                       activeSpan.span.end({
                         outputs: { endedAt: data.endedAt || evt.ts, durationMs },
-                        status: "OK",
+                        status: SpanStatusCode.OK,
                       });
                       activeSpans.delete(spanId);
                     } catch (error) {
-                      ctx.logger.warn("Failed to end lifecycle span:", error);
+                      ctx.logger.warn(`Failed to end lifecycle span: ${String(error)}`);
                     }
                   }
                 }
@@ -633,7 +633,7 @@ export function createDiagnosticsMlflowService(): OpenClawPluginService {
                       startedAt: evt.ts,
                     });
                   } catch (error) {
-                    ctx.logger.warn("Failed to start compaction span:", error);
+                    ctx.logger.warn(`Failed to start compaction span: ${String(error)}`);
                   }
                 } else if (data.phase === "end") {
                   const activeSpan = activeSpans.get(spanId);
@@ -641,12 +641,12 @@ export function createDiagnosticsMlflowService(): OpenClawPluginService {
                     try {
                       activeSpan.span.end({
                         outputs: { willRetry: data.willRetry },
-                        status: data.willRetry ? "ERROR" : "OK",
+                        status: data.willRetry ? SpanStatusCode.ERROR : SpanStatusCode.OK,
                         ...(data.willRetry && { statusMessage: "Compaction retry scheduled" }),
                       });
                       activeSpans.delete(spanId);
                     } catch (error) {
-                      ctx.logger.warn("Failed to end compaction span:", error);
+                      ctx.logger.warn(`Failed to end compaction span: ${String(error)}`);
                     }
                   }
                 }
@@ -678,7 +678,7 @@ export function createDiagnosticsMlflowService(): OpenClawPluginService {
                       startedAt: evt.ts,
                     });
                   } catch (error) {
-                    ctx.logger.warn("Failed to start assistant span:", error);
+                    ctx.logger.warn(`Failed to start assistant span: ${String(error)}`);
                   }
                 } else if (data.final) {
                   const activeSpan = activeSpans.get(spanId);
@@ -686,11 +686,11 @@ export function createDiagnosticsMlflowService(): OpenClawPluginService {
                     try {
                       activeSpan.span.end({
                         outputs: { final: true },
-                        status: "OK",
+                        status: SpanStatusCode.OK,
                       });
                       activeSpans.delete(spanId);
                     } catch (error) {
-                      ctx.logger.warn("Failed to end assistant span:", error);
+                      ctx.logger.warn(`Failed to end assistant span: ${String(error)}`);
                     }
                   }
                 }
@@ -715,13 +715,12 @@ export function createDiagnosticsMlflowService(): OpenClawPluginService {
                     },
                   });
 
+                  errorSpan.setStatus(SpanStatusCode.ERROR, data.error || data.message || "Unknown error");
                   errorSpan.end({
                     outputs: { error: data.error, message: data.message, stack: data.stack },
-                    status: "ERROR",
-                    statusMessage: data.error || data.message || "Unknown error",
                   });
                 } catch (error) {
-                  ctx.logger.warn("Failed to create error span:", error);
+                  ctx.logger.warn(`Failed to create error span: ${String(error)}`);
                 }
                 break;
               }
@@ -733,7 +732,7 @@ export function createDiagnosticsMlflowService(): OpenClawPluginService {
           `diagnostics-mlflow: started (metrics${tracesEnabled && tracingInitialized ? " + traces" : ""})`,
         );
       } catch (error) {
-        ctx.logger.error("diagnostics-mlflow: failed to start", error);
+        ctx.logger.error(`diagnostics-mlflow: failed to start: ${String(error)}`);
         throw error;
       }
     },
@@ -753,7 +752,8 @@ export function createDiagnosticsMlflowService(): OpenClawPluginService {
       // End any remaining spans
       for (const [, activeSpan] of activeSpans) {
         try {
-          activeSpan.span.end({ status: "ERROR", statusMessage: "Service stopped" });
+          activeSpan.span.setStatus(SpanStatusCode.ERROR, "Service stopped");
+          activeSpan.span.end();
         } catch {
           // Ignore errors during cleanup
         }
@@ -764,7 +764,8 @@ export function createDiagnosticsMlflowService(): OpenClawPluginService {
       for (const [, trace] of activeTraces) {
         if (trace.rootSpan) {
           try {
-            trace.rootSpan.span.end({ status: "ERROR", statusMessage: "Service stopped" });
+            trace.rootSpan.span.setStatus(SpanStatusCode.ERROR, "Service stopped");
+            trace.rootSpan.span.end();
           } catch {
             // Ignore errors during cleanup
           }
