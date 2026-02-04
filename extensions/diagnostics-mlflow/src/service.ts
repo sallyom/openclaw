@@ -284,12 +284,8 @@ export function createDiagnosticsMlflowService(): OpenClawPluginService {
         }
 
         // Subscribe to diagnostic events (for metrics AND trace/span lifecycle)
-        console.log('[MLflow] ABOUT TO SUBSCRIBE to diagnostic events');
         unsubscribe = onDiagnosticEvent(async (evt: DiagnosticEventPayload) => {
           requestCounter++;
-
-          // DEBUG: Log every diagnostic event to verify handler is called
-          console.log(`[MLflow] Diagnostic event received: type=${evt.type} sessionKey=${(evt as any).sessionKey || 'N/A'}`);
 
           switch (evt.type) {
             case "message.queued": {
@@ -316,6 +312,7 @@ export function createDiagnosticsMlflowService(): OpenClawPluginService {
                   spanType: mlflow.SpanType.CHAIN,
                   inputs: {
                     session_key: evt.sessionKey,
+                    user_info: agentId, // For User column in MLflow UI
                     channel: evt.channel,
                     source: evt.source,
                     queue_depth: evt.queueDepth,
@@ -339,18 +336,17 @@ export function createDiagnosticsMlflowService(): OpenClawPluginService {
                   },
                 });
 
-                // Set trace-level metadata for MLflow session/user grouping
-                // Try both tags and metadata to ensure compatibility
+                // Set trace-level metadata for MLflow session/user columns
+                // Session column reads from metadata.thread_id
+                // User column reads from inputs.user_info (set above)
                 updateCurrentTrace({
-                  tags: {
-                    "mlflow.trace.session": evt.sessionKey,
-                    "mlflow.trace.user": agentId,
-                  },
                   metadata: {
-                    "mlflow.trace.session": evt.sessionKey,
-                    "mlflow.trace.user": agentId,
+                    thread_id: evt.sessionKey, // For Session column in MLflow UI
                   },
                 });
+                ctx.logger.info(
+                  `Set trace metadata: thread_id=${evt.sessionKey} user_info=${agentId}`,
+                );
 
                 ctx.logger.info(`MLflow span created: spanId=${rootSpan.spanId} traceId=${rootSpan.traceId}`);
 
@@ -488,53 +484,11 @@ export function createDiagnosticsMlflowService(): OpenClawPluginService {
                       `MLflow trace ended: requestId=${trace.requestId} sessionKey=${evt.sessionKey} outcome=${evt.outcome} duration=${durationMs}ms spanId=${trace.rootSpan.span.spanId}`,
                     );
 
-                    // Immediately flush traces to MLflow (don't wait for timer)
+                    // Flush traces to MLflow to persist metadata (thread_id) and inputs (user_info)
                     await flushTracesIfNeeded();
-                    ctx.logger.info(`Flushed trace ${trace.requestId} to MLflow`);
-
-                    // WORKAROUND: TypeScript SDK v0.1.2 doesn't send session/user tags to MLflow
-                    // Set tags via REST API AFTER flushing the trace to MLflow
-                    if (client && trace.sessionKey && trace.agentId) {
-                      try {
-                        ctx.logger.info(
-                          `Setting session/user tags for trace ${trace.requestId}: session=${trace.sessionKey} user=${trace.agentId}`,
-                        );
-                        const sessionTagResult = await client.post(
-                          "/api/2.0/mlflow/traces/set-trace-tag",
-                          {
-                            request_id: trace.requestId,
-                            key: "mlflow.trace.session",
-                            value: trace.sessionKey,
-                          },
-                        );
-                        ctx.logger.info(
-                          `Session tag response: ${JSON.stringify(sessionTagResult.data)}`,
-                        );
-                        const userTagResult = await client.post("/api/2.0/mlflow/traces/set-trace-tag", {
-                          request_id: trace.requestId,
-                          key: "mlflow.trace.user",
-                          value: trace.agentId,
-                        });
-                        ctx.logger.info(`User tag response: ${JSON.stringify(userTagResult.data)}`);
-                        ctx.logger.info(
-                          `Successfully set session/user tags for trace ${trace.requestId}`,
-                        );
-                      } catch (tagError: unknown) {
-                        ctx.logger.error(
-                          `Failed to set session/user tags for trace ${trace.requestId}: ${String(tagError)}`,
-                        );
-                        if (tagError && typeof tagError === "object" && "response" in tagError) {
-                          const axiosError = tagError as { response?: { status?: number; data?: unknown } };
-                          ctx.logger.error(
-                            `REST API error details: status=${axiosError.response?.status} data=${JSON.stringify(axiosError.response?.data)}`,
-                          );
-                        }
-                      }
-                    } else {
-                      ctx.logger.warn(
-                        `Cannot set tags: client=${!!client} sessionKey=${!!trace.sessionKey} agentId=${!!trace.agentId}`,
-                      );
-                    }
+                    ctx.logger.info(
+                      `Flushed trace ${trace.requestId} to MLflow (session=${trace.sessionKey} user=${trace.agentId})`,
+                    );
                   } catch (error) {
                     ctx.logger.error(`Failed to end message span: ${String(error)}`);
                   }
@@ -563,7 +517,6 @@ export function createDiagnosticsMlflowService(): OpenClawPluginService {
             }
           }
         });
-        console.log('[MLflow] SUCCESSFULLY SUBSCRIBED to diagnostic events');
 
         // Subscribe to agent events for comprehensive span tracking
         if (tracesEnabled && tracingInitialized) {

@@ -161,18 +161,25 @@ export function emitDiagnosticEvent(event: DiagnosticEventInput) {
     seq: (seq += 1),
     ts: Date.now(),
   } satisfies DiagnosticEventPayload;
-  console.log(`[diagnostic-events] EMIT type=${event.type} listeners=${listeners.size}`);
+  // DEBUG: Temporary logging to diagnose trace creation issues
+  if (
+    event.type === "model.usage" ||
+    event.type === "message.queued" ||
+    event.type === "message.processed"
+  ) {
+    console.log(`[diagnostic-events] EMIT type=${event.type} listeners=${listeners.size}`);
+  }
   for (const listener of listeners) {
     try {
       listener(enriched);
-    } catch {
-      // Ignore listener failures.
+    } catch (err) {
+      // Log listener failures for debugging
+      console.error(`[diagnostic-events] Listener error for ${event.type}:`, err);
     }
   }
 }
 
 export function onDiagnosticEvent(listener: (evt: DiagnosticEventPayload) => void): () => void {
-  console.log(`[diagnostic-events] SUBSCRIBE total=${listeners.size + 1}`);
   listeners.add(listener);
   return () => listeners.delete(listener);
 }
