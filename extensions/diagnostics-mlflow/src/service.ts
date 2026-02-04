@@ -58,6 +58,7 @@ interface ActiveTrace {
   startedAt: number;
   sessionKey?: string;
   channel?: string;
+  agentId?: string;
   rootSpan?: ActiveSpan;
 }
 
@@ -353,30 +354,12 @@ export function createDiagnosticsMlflowService(): OpenClawPluginService {
 
                 ctx.logger.info(`MLflow span created: spanId=${rootSpan.spanId} traceId=${rootSpan.traceId}`);
 
-                // WORKAROUND: TypeScript SDK v0.1.2 doesn't send session/user tags to MLflow
-                // Manually set tags via REST API after trace creation
-                try {
-                  if (client) {
-                    await client.post("/api/2.0/mlflow/traces/set-trace-tag", {
-                      request_id: rootSpan.traceId,
-                      key: "mlflow.trace.session",
-                      value: evt.sessionKey,
-                    });
-                    await client.post("/api/2.0/mlflow/traces/set-trace-tag", {
-                      request_id: rootSpan.traceId,
-                      key: "mlflow.trace.user",
-                      value: agentId,
-                    });
-                    ctx.logger.info(`Set session/user tags for trace ${rootSpan.traceId}`);
-                  }
-                } catch (tagError) {
-                  ctx.logger.warn(`Failed to set session/user tags: ${String(tagError)}`);
-                }
-
+                // Store trace with agentId for later tag setting (after flush)
                 activeTraces.set(evt.sessionKey, {
                   requestId: rootSpan.traceId,
                   startedAt: evt.ts || Date.now(),
                   sessionKey: evt.sessionKey,
+                  agentId,
                   channel: evt.channel,
                   rootSpan: {
                     span: rootSpan,
@@ -506,9 +489,52 @@ export function createDiagnosticsMlflowService(): OpenClawPluginService {
                     );
 
                     // Immediately flush traces to MLflow (don't wait for timer)
-                    flushTracesIfNeeded().catch((err) =>
-                      ctx.logger.warn(`Failed to flush traces after completion: ${String(err)}`),
-                    );
+                    await flushTracesIfNeeded();
+                    ctx.logger.info(`Flushed trace ${trace.requestId} to MLflow`);
+
+                    // WORKAROUND: TypeScript SDK v0.1.2 doesn't send session/user tags to MLflow
+                    // Set tags via REST API AFTER flushing the trace to MLflow
+                    if (client && trace.sessionKey && trace.agentId) {
+                      try {
+                        ctx.logger.info(
+                          `Setting session/user tags for trace ${trace.requestId}: session=${trace.sessionKey} user=${trace.agentId}`,
+                        );
+                        const sessionTagResult = await client.post(
+                          "/api/2.0/mlflow/traces/set-trace-tag",
+                          {
+                            request_id: trace.requestId,
+                            key: "mlflow.trace.session",
+                            value: trace.sessionKey,
+                          },
+                        );
+                        ctx.logger.info(
+                          `Session tag response: ${JSON.stringify(sessionTagResult.data)}`,
+                        );
+                        const userTagResult = await client.post("/api/2.0/mlflow/traces/set-trace-tag", {
+                          request_id: trace.requestId,
+                          key: "mlflow.trace.user",
+                          value: trace.agentId,
+                        });
+                        ctx.logger.info(`User tag response: ${JSON.stringify(userTagResult.data)}`);
+                        ctx.logger.info(
+                          `Successfully set session/user tags for trace ${trace.requestId}`,
+                        );
+                      } catch (tagError: unknown) {
+                        ctx.logger.error(
+                          `Failed to set session/user tags for trace ${trace.requestId}: ${String(tagError)}`,
+                        );
+                        if (tagError && typeof tagError === "object" && "response" in tagError) {
+                          const axiosError = tagError as { response?: { status?: number; data?: unknown } };
+                          ctx.logger.error(
+                            `REST API error details: status=${axiosError.response?.status} data=${JSON.stringify(axiosError.response?.data)}`,
+                          );
+                        }
+                      }
+                    } else {
+                      ctx.logger.warn(
+                        `Cannot set tags: client=${!!client} sessionKey=${!!trace.sessionKey} agentId=${!!trace.agentId}`,
+                      );
+                    }
                   } catch (error) {
                     ctx.logger.error(`Failed to end message span: ${String(error)}`);
                   }
