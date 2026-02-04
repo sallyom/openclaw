@@ -284,7 +284,7 @@ export function createDiagnosticsMlflowService(): OpenClawPluginService {
 
         // Subscribe to diagnostic events (for metrics AND trace/span lifecycle)
         console.log('[MLflow] ABOUT TO SUBSCRIBE to diagnostic events');
-        unsubscribe = onDiagnosticEvent((evt: DiagnosticEventPayload) => {
+        unsubscribe = onDiagnosticEvent(async (evt: DiagnosticEventPayload) => {
           requestCounter++;
 
           // DEBUG: Log every diagnostic event to verify handler is called
