@@ -432,6 +432,7 @@ export function createDiagnosticsMlflowService(): OpenClawPluginService {
                 if (trace?.rootSpan) {
                   try {
                     // Create LLM span with trace context for proper nesting
+                    // Include prompt in inputs for MLflow Prompt column (used in agent evaluations)
                     const modelSpan = mlflow.startSpan({
                       name: `model.${evt.provider}.${evt.model}`,
                       spanType: mlflow.SpanType.LLM,
@@ -439,6 +440,8 @@ export function createDiagnosticsMlflowService(): OpenClawPluginService {
                         provider: evt.provider,
                         model: evt.model,
                         session_key: evt.sessionKey,
+                        // Include prompt for agent evaluation (Prompt column in MLflow UI)
+                        ...(evt.prompt && { prompt: evt.prompt }),
                       },
                       attributes: {
                         "model.provider": evt.provider || "unknown",
