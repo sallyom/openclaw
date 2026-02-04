@@ -307,6 +307,9 @@ export function createDiagnosticsMlflowService(): OpenClawPluginService {
                 ctx.logger.info(`Creating MLflow trace for sessionKey=${evt.sessionKey}`);
 
                 // Create root span using MLflow SDK
+                // Extract agent ID from sessionKey (format: agent:{agentId}:{channel}:{conversationId?})
+                const agentId = evt.sessionKey?.split(":")[1] || "unknown";
+
                 const rootSpan = mlflow.startSpan({
                   name: "message.process",
                   spanType: mlflow.SpanType.CHAIN,
@@ -319,9 +322,10 @@ export function createDiagnosticsMlflowService(): OpenClawPluginService {
                   attributes: {
                     // MLflow session grouping (official metadata keys)
                     "mlflow.trace.session": evt.sessionKey,
-                    "mlflow.trace.user": evt.channel || "unknown",  // Use channel as user identifier
+                    "mlflow.trace.user": agentId,  // Agent as user (shadowman, philbot, etc.)
                     // OpenClaw-specific attributes
                     "openclaw.sessionKey": evt.sessionKey,
+                    "openclaw.agentId": agentId,
                     "openclaw.channel": evt.channel || "unknown",
                     "openclaw.source": evt.source,
                     "openclaw.queueDepth": evt.queueDepth || 0,
