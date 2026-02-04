@@ -12,7 +12,7 @@ import type {
 } from "openclaw/plugin-sdk";
 import { onAgentEvent, onDiagnosticEvent } from "openclaw/plugin-sdk";
 import * as mlflow from "mlflow-tracing";
-import { flushTraces, SpanStatusCode, updateCurrentTrace } from "mlflow-tracing";
+import { flushTraces, SpanStatusCode, updateCurrentTrace, withSpan } from "mlflow-tracing";
 
 interface MLFlowConfig {
   enabled?: boolean;
@@ -320,6 +320,9 @@ export function createDiagnosticsMlflowService(): OpenClawPluginService {
                     queue_depth: evt.queueDepth,
                   },
                   attributes: {
+                    // MLflow session/user attributes (may be recognized by server)
+                    "mlflow.trace.session": evt.sessionKey,
+                    "mlflow.trace.user": agentId,
                     // OpenClaw-specific attributes
                     "openclaw.sessionKey": evt.sessionKey,
                     "openclaw.agentId": agentId,
@@ -336,7 +339,12 @@ export function createDiagnosticsMlflowService(): OpenClawPluginService {
                 });
 
                 // Set trace-level metadata for MLflow session/user grouping
+                // Try both tags and metadata to ensure compatibility
                 updateCurrentTrace({
+                  tags: {
+                    "mlflow.trace.session": evt.sessionKey,
+                    "mlflow.trace.user": agentId,
+                  },
                   metadata: {
                     "mlflow.trace.session": evt.sessionKey,
                     "mlflow.trace.user": agentId,
