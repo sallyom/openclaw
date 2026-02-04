@@ -353,6 +353,26 @@ export function createDiagnosticsMlflowService(): OpenClawPluginService {
 
                 ctx.logger.info(`MLflow span created: spanId=${rootSpan.spanId} traceId=${rootSpan.traceId}`);
 
+                // WORKAROUND: TypeScript SDK v0.1.2 doesn't send session/user tags to MLflow
+                // Manually set tags via REST API after trace creation
+                try {
+                  if (client) {
+                    await client.post("/api/2.0/mlflow/traces/set-trace-tag", {
+                      request_id: rootSpan.traceId,
+                      key: "mlflow.trace.session",
+                      value: evt.sessionKey,
+                    });
+                    await client.post("/api/2.0/mlflow/traces/set-trace-tag", {
+                      request_id: rootSpan.traceId,
+                      key: "mlflow.trace.user",
+                      value: agentId,
+                    });
+                    ctx.logger.info(`Set session/user tags for trace ${rootSpan.traceId}`);
+                  }
+                } catch (tagError) {
+                  ctx.logger.warn(`Failed to set session/user tags: ${String(tagError)}`);
+                }
+
                 activeTraces.set(evt.sessionKey, {
                   requestId: rootSpan.traceId,
                   startedAt: evt.ts || Date.now(),
