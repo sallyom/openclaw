@@ -299,8 +299,11 @@ export function loadOpenClawPlugins(options: PluginLoadOptions = {}): PluginRegi
       const distIndexJs = path.join(candidateDir, "dist", "index.js");
 
       if (fs.existsSync(distIndexJs)) {
+        console.log(`[plugins] ${record.id}: using pre-built ${distIndexJs}`);
         logger.debug?.(`[plugins] ${record.id}: using pre-built ${distIndexJs}`);
         moduleSource = distIndexJs;
+      } else {
+        console.log(`[plugins] ${record.id}: dist/index.js not found, using TypeScript source`);
       }
 
       mod = jiti(moduleSource) as OpenClawPluginModule;
