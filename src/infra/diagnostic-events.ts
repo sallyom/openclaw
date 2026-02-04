@@ -159,6 +159,7 @@ export function emitDiagnosticEvent(event: DiagnosticEventInput) {
     seq: (seq += 1),
     ts: Date.now(),
   } satisfies DiagnosticEventPayload;
+  console.log(`[diagnostic-events] EMIT type=${event.type} listeners=${listeners.size}`);
   for (const listener of listeners) {
     try {
       listener(enriched);
@@ -169,6 +170,7 @@ export function emitDiagnosticEvent(event: DiagnosticEventInput) {
 }
 
 export function onDiagnosticEvent(listener: (evt: DiagnosticEventPayload) => void): () => void {
+  console.log(`[diagnostic-events] SUBSCRIBE total=${listeners.size + 1}`);
   listeners.add(listener);
   return () => listeners.delete(listener);
 }
