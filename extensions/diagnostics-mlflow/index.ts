@@ -1,6 +1,7 @@
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk";
 import { emptyPluginConfigSchema } from "openclaw/plugin-sdk";
 
+// Use MLflow TypeScript SDK with correct session/user metadata fields
 import { createDiagnosticsMlflowService, getMLflowTraceContext } from "./src/service.js";
 
 const plugin = {
