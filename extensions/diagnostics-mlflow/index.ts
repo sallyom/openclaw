@@ -1,8 +1,8 @@
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk";
 import { emptyPluginConfigSchema } from "openclaw/plugin-sdk";
 
-// Use MLflow TypeScript SDK with correct session/user metadata fields
-import { createDiagnosticsMlflowService, getMLflowTraceContext } from "./src/service.js";
+// Use OpenTelemetry OTLP implementation for MLflow (full control over trace metadata)
+import { createDiagnosticsMlflowService, getMLflowTraceContext } from "./src/service-otel.js";
 
 const plugin = {
   id: "diagnostics-mlflow",

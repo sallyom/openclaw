@@ -440,6 +440,13 @@ export async function runReplyAgent(params: {
         config: cfg,
       });
       const costUsd = estimateUsageCost({ usage, cost: costConfig });
+
+      // Extract completion text from reply payloads for observability
+      const completion = replyPayloads
+        .map((p) => p.text)
+        .filter((t): t is string => typeof t === "string" && t.trim().length > 0)
+        .join("\n");
+
       emitDiagnosticEvent({
         type: "model.usage",
         sessionKey,
@@ -448,6 +455,7 @@ export async function runReplyAgent(params: {
         provider: providerUsed,
         model: modelUsed,
         prompt: followupRun.prompt,
+        completion: completion || undefined,
         usage: {
           input,
           output,
