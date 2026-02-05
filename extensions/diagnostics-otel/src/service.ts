@@ -1,6 +1,8 @@
 import type { SeverityNumber } from "@opentelemetry/api-logs";
+import type { ExportResult } from "@opentelemetry/core";
 import type { DiagnosticEventPayload, OpenClawPluginService } from "openclaw/plugin-sdk";
 import { metrics, trace, SpanStatusCode } from "@opentelemetry/api";
+import { hrTimeToMilliseconds } from "@opentelemetry/core";
 import { OTLPLogExporter } from "@opentelemetry/exporter-logs-otlp-http";
 import { OTLPMetricExporter } from "@opentelemetry/exporter-metrics-otlp-http";
 import { OTLPTraceExporter } from "@opentelemetry/exporter-trace-otlp-http";
@@ -8,11 +10,20 @@ import { resourceFromAttributes } from "@opentelemetry/resources";
 import { BatchLogRecordProcessor, LoggerProvider } from "@opentelemetry/sdk-logs";
 import { PeriodicExportingMetricReader } from "@opentelemetry/sdk-metrics";
 import { NodeSDK } from "@opentelemetry/sdk-node";
-import { ParentBasedSampler, TraceIdRatioBasedSampler } from "@opentelemetry/sdk-trace-base";
+import {
+  BatchSpanProcessor,
+  ParentBasedSampler,
+  TraceIdRatioBasedSampler,
+  type ReadableSpan,
+  type SpanExporter,
+} from "@opentelemetry/sdk-trace-base";
 import { SemanticResourceAttributes } from "@opentelemetry/semantic-conventions";
+import fs from "node:fs";
 import { onDiagnosticEvent, registerLogTransport } from "openclaw/plugin-sdk";
 
 const DEFAULT_SERVICE_NAME = "openclaw";
+const OTEL_DEBUG_ENV = "OPENCLAW_OTEL_DEBUG";
+const OTEL_DUMP_ENV = "OPENCLAW_OTEL_DUMP";
 
 function normalizeEndpoint(endpoint?: string): string | undefined {
   const trimmed = endpoint?.trim();
@@ -37,6 +48,67 @@ function resolveSampleRate(value: number | undefined): number | undefined {
     return undefined;
   }
   return value;
+}
+
+class LoggingTraceExporter implements SpanExporter {
+  #inner: SpanExporter;
+  #log: { info: (msg: string) => void };
+  #dumpPath?: string;
+  #dumpFailed = false;
+
+  constructor(inner: SpanExporter, log: { info: (msg: string) => void }, dumpPath?: string) {
+    this.#inner = inner;
+    this.#log = log;
+    this.#dumpPath = dumpPath;
+  }
+
+  export(spans: ReadableSpan[], resultCallback: (result: ExportResult) => void) {
+    const first = spans[0];
+    const details = first ? ` first=${first.name}` : "";
+    this.#log.info(`diagnostics-otel: exporting ${spans.length} spans.${details}`);
+    if (this.#dumpPath && !this.#dumpFailed) {
+      try {
+        for (const span of spans) {
+          const startMs = hrTimeToMilliseconds(span.startTime);
+          const endMs = hrTimeToMilliseconds(span.endTime);
+          const payload = {
+            ts: new Date().toISOString(),
+            name: span.name,
+            traceId: span.spanContext().traceId,
+            spanId: span.spanContext().spanId,
+            parentSpanId: span.parentSpanId,
+            kind: span.kind,
+            status: span.status,
+            attributes: span.attributes,
+            resource: span.resource?.attributes,
+            startTimeMs: startMs,
+            endTimeMs: endMs,
+            durationMs: endMs - startMs,
+          };
+          fs.appendFileSync(
+            this.#dumpPath,
+            `${JSON.stringify(payload, (_key, value) =>
+              typeof value === "bigint" ? Number(value) : value,
+            )}\n`,
+          );
+        }
+      } catch (err) {
+        this.#dumpFailed = true;
+        this.#log.info(`diagnostics-otel: failed to write dump file: ${String(err)}`);
+      }
+    }
+    this.#inner.export(spans, resultCallback);
+  }
+
+  async shutdown() {
+    await this.#inner.shutdown();
+  }
+
+  async forceFlush() {
+    if (this.#inner.forceFlush) {
+      await this.#inner.forceFlush();
+    }
+  }
 }
 
 export function createDiagnosticsOtelService(): OpenClawPluginService {
@@ -65,12 +137,22 @@ export function createDiagnosticsOtelService(): OpenClawPluginService {
       const serviceName =
         otel.serviceName?.trim() || process.env.OTEL_SERVICE_NAME || DEFAULT_SERVICE_NAME;
       const sampleRate = resolveSampleRate(otel.sampleRate);
+      const debugExports = ["1", "true", "yes", "on"].includes(
+        (process.env[OTEL_DEBUG_ENV] ?? "").toLowerCase(),
+      );
+      const dumpPathRaw = process.env[OTEL_DUMP_ENV]?.trim();
+      const dumpPath = dumpPathRaw ? dumpPathRaw : undefined;
 
       const tracesEnabled = otel.traces !== false;
       const metricsEnabled = otel.metrics !== false;
       const logsEnabled = otel.logs === true;
       if (!tracesEnabled && !metricsEnabled && !logsEnabled) {
         return;
+      }
+      if (debugExports) {
+        ctx.logger.info(
+          `diagnostics-otel: debug enabled (traces=${tracesEnabled}, metrics=${metricsEnabled}, logs=${logsEnabled})`,
+        );
       }
 
       const resource = resourceFromAttributes({
@@ -81,10 +163,16 @@ export function createDiagnosticsOtelService(): OpenClawPluginService {
       const metricUrl = resolveOtelUrl(endpoint, "v1/metrics");
       const logUrl = resolveOtelUrl(endpoint, "v1/logs");
       const traceExporter = tracesEnabled
-        ? new OTLPTraceExporter({
-            ...(traceUrl ? { url: traceUrl } : {}),
-            ...(headers ? { headers } : {}),
-          })
+        ? (() => {
+            const base = new OTLPTraceExporter({
+              ...(traceUrl ? { url: traceUrl } : {}),
+              ...(headers ? { headers } : {}),
+            });
+            if (debugExports) {
+              return new LoggingTraceExporter(base, ctx.logger, dumpPath);
+            }
+            return base;
+          })()
         : undefined;
 
       const metricExporter = metricsEnabled
@@ -108,6 +196,14 @@ export function createDiagnosticsOtelService(): OpenClawPluginService {
           resource,
           ...(traceExporter ? { traceExporter } : {}),
           ...(metricReader ? { metricReader } : {}),
+          // DEBUG ONLY: keep the explicit processor available while validating exports.
+          // ...(traceExporter && debugExports
+          //   ? {
+          //       spanProcessor: new BatchSpanProcessor(traceExporter, {
+          //         scheduledDelayMillis: 1000,
+          //       }),
+          //     }
+          //   : {}),
           ...(sampleRate !== undefined
             ? {
                 sampler: new ParentBasedSampler({
@@ -210,13 +306,17 @@ export function createDiagnosticsOtelService(): OpenClawPluginService {
           ...(logUrl ? { url: logUrl } : {}),
           ...(headers ? { headers } : {}),
         });
-        const processor = new BatchLogRecordProcessor(
-          logExporter,
-          typeof otel.flushIntervalMs === "number"
-            ? { scheduledDelayMillis: Math.max(1000, otel.flushIntervalMs) }
-            : {},
-        );
-        logProvider = new LoggerProvider({ resource, processors: [processor] });
+        logProvider = new LoggerProvider({
+          resource,
+          processors: [
+            new BatchLogRecordProcessor(
+              logExporter,
+              typeof otel.flushIntervalMs === "number"
+                ? { scheduledDelayMillis: Math.max(1000, otel.flushIntervalMs) }
+                : {},
+            ),
+          ],
+        });
         const otelLogger = logProvider.getLogger("openclaw");
 
         stopLogTransport = registerLogTransport((logObj) => {
@@ -397,6 +497,9 @@ export function createDiagnosticsOtelService(): OpenClawPluginService {
         };
 
         const span = spanWithDuration("openclaw.model.usage", spanAttrs, evt.durationMs);
+        if (debugExports) {
+          ctx.logger.info(`diagnostics-otel: span created openclaw.model.usage`);
+        }
         span.end();
       };
 
@@ -428,6 +531,9 @@ export function createDiagnosticsOtelService(): OpenClawPluginService {
           spanAttrs["openclaw.chatId"] = String(evt.chatId);
         }
         const span = spanWithDuration("openclaw.webhook.processed", spanAttrs, evt.durationMs);
+        if (debugExports) {
+          ctx.logger.info(`diagnostics-otel: span created openclaw.webhook.processed`);
+        }
         span.end();
       };
 
@@ -453,6 +559,9 @@ export function createDiagnosticsOtelService(): OpenClawPluginService {
           attributes: spanAttrs,
         });
         span.setStatus({ code: SpanStatusCode.ERROR, message: evt.error });
+        if (debugExports) {
+          ctx.logger.info(`diagnostics-otel: span created openclaw.webhook.error`);
+        }
         span.end();
       };
 
@@ -502,6 +611,9 @@ export function createDiagnosticsOtelService(): OpenClawPluginService {
         const span = spanWithDuration("openclaw.message.processed", spanAttrs, evt.durationMs);
         if (evt.outcome === "error") {
           span.setStatus({ code: SpanStatusCode.ERROR, message: evt.error });
+        }
+        if (debugExports) {
+          ctx.logger.info(`diagnostics-otel: span created openclaw.message.processed`);
         }
         span.end();
       };
@@ -557,6 +669,9 @@ export function createDiagnosticsOtelService(): OpenClawPluginService {
         spanAttrs["openclaw.ageMs"] = evt.ageMs;
         const span = tracer.startSpan("openclaw.session.stuck", { attributes: spanAttrs });
         span.setStatus({ code: SpanStatusCode.ERROR, message: "session stuck" });
+        if (debugExports) {
+          ctx.logger.info(`diagnostics-otel: span created openclaw.session.stuck`);
+        }
         span.end();
       };
 
@@ -571,6 +686,9 @@ export function createDiagnosticsOtelService(): OpenClawPluginService {
       };
 
       unsubscribe = onDiagnosticEvent((evt: DiagnosticEventPayload) => {
+        if (debugExports) {
+          ctx.logger.info(`diagnostics-otel: event received ${evt.type}`);
+        }
         switch (evt.type) {
           case "model.usage":
             recordModelUsage(evt);
