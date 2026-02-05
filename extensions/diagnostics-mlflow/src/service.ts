@@ -220,6 +220,7 @@ export function createDiagnosticsMlflowService(): OpenClawPluginService {
     );
   }
 
+
   return {
     id: "diagnostics-mlflow",
 
@@ -312,13 +313,13 @@ export function createDiagnosticsMlflowService(): OpenClawPluginService {
                   spanType: mlflow.SpanType.CHAIN,
                   inputs: {
                     session_key: evt.sessionKey,
-                    user_info: agentId, // For User column in MLflow UI
+                    user_id: agentId,  // Add user to inputs for MLflow UI
                     channel: evt.channel,
                     source: evt.source,
                     queue_depth: evt.queueDepth,
                   },
                   attributes: {
-                    // MLflow session/user attributes (may be recognized by server)
+                    // CRITICAL: MLflow UI reads these for Session/User columns
                     "mlflow.trace.session": evt.sessionKey,
                     "mlflow.trace.user": agentId,
                     // OpenClaw-specific attributes
@@ -336,16 +337,8 @@ export function createDiagnosticsMlflowService(): OpenClawPluginService {
                   },
                 });
 
-                // Set trace-level metadata for MLflow session/user columns
-                // Session column reads from metadata.thread_id
-                // User column reads from inputs.user_info (set above)
-                updateCurrentTrace({
-                  metadata: {
-                    thread_id: evt.sessionKey, // For Session column in MLflow UI
-                  },
-                });
                 ctx.logger.info(
-                  `Set trace metadata: thread_id=${evt.sessionKey} user_info=${agentId}`,
+                  `MLflow trace started with attributes: mlflow.trace.session=${evt.sessionKey} mlflow.trace.user=${agentId}`,
                 );
 
                 ctx.logger.info(`MLflow span created: spanId=${rootSpan.spanId} traceId=${rootSpan.traceId}`);
@@ -374,6 +367,17 @@ export function createDiagnosticsMlflowService(): OpenClawPluginService {
             }
 
             case "model.usage": {
+              // Update trace with prompt for Prompt column in MLflow UI
+              if (evt.prompt && tracingInitialized) {
+                try {
+                  updateCurrentTrace({
+                    requestPreview: evt.prompt,
+                  });
+                } catch (error) {
+                  ctx.logger.warn(`Failed to set prompt preview: ${String(error)}`);
+                }
+              }
+
               // Track metrics
               if (cfg.trackTokenUsage && evt.usage) {
                 if (evt.usage.input) {
