@@ -4,24 +4,23 @@
  * Uses GenAI semantic conventions for LLM observability
  */
 
-import axios, { type AxiosInstance } from "axios";
 import type {
   AgentEventPayload,
   DiagnosticEventPayload,
   OpenClawPluginService,
 } from "openclaw/plugin-sdk";
-import { onAgentEvent, onDiagnosticEvent } from "openclaw/plugin-sdk";
-
 // OpenTelemetry imports
 import { trace, context, SpanStatusCode, type Span } from "@opentelemetry/api";
+import { OTLPTraceExporter } from "@opentelemetry/exporter-trace-otlp-proto";
 import { resourceFromAttributes } from "@opentelemetry/resources";
+import { NodeTracerProvider, BatchSpanProcessor } from "@opentelemetry/sdk-trace-node";
 import {
   SEMRESATTRS_SERVICE_NAME,
   SEMRESATTRS_SERVICE_VERSION,
   SEMRESATTRS_DEPLOYMENT_ENVIRONMENT,
 } from "@opentelemetry/semantic-conventions";
-import { NodeTracerProvider, BatchSpanProcessor } from "@opentelemetry/sdk-trace-node";
-import { OTLPTraceExporter } from "@opentelemetry/exporter-trace-otlp-proto";
+import axios, { type AxiosInstance } from "axios";
+import { onAgentEvent, onDiagnosticEvent } from "openclaw/plugin-sdk";
 
 interface MLFlowConfig {
   enabled?: boolean;
@@ -84,7 +83,7 @@ const GENAI_ATTRS = {
 
   // Session and user (OpenTelemetry semantic conventions)
   SESSION_ID: "session.id",
-  USER_ID: "enduser.id",  // OpenTelemetry standard
+  USER_ID: "enduser.id", // OpenTelemetry standard
   THREAD_ID: "thread.id",
 
   // MLflow-specific (for MLflow UI columns)
@@ -122,8 +121,8 @@ export function getMLflowTraceContext(sessionKey?: string): Record<string, strin
 
   // Return W3C Trace Context headers
   return {
-    "traceparent": `00-${spanContext.traceId}-${spanContext.spanId}-01`,
-    "tracestate": spanContext.traceState?.serialize() || "",
+    traceparent: `00-${spanContext.traceId}-${spanContext.spanId}-01`,
+    tracestate: spanContext.traceState?.serialize() || "",
   };
 }
 
@@ -146,10 +145,7 @@ export function createDiagnosticsMlflowService(): OpenClawPluginService {
   const activeTraces = activeTracesGlobal;
   const activeSpans = new Map<string, Span>(); // spanId (toolCallId) -> span
 
-  async function ensureExperiment(
-    cfg: MLFlowConfig,
-    trackingUri: string,
-  ): Promise<string> {
+  async function ensureExperiment(cfg: MLFlowConfig, trackingUri: string): Promise<string> {
     if (cfg.experimentId) {
       return cfg.experimentId;
     }
@@ -230,17 +226,14 @@ export function createDiagnosticsMlflowService(): OpenClawPluginService {
       clearTimeout(flushTimer);
     }
 
-    flushTimer = setTimeout(
-      async () => {
-        try {
-          await flushMetrics(cfg);
-        } catch (err) {
-          console.error("Failed to flush MLFlow metrics:", err);
-        }
-        scheduleFlush(cfg);
-      },
-      cfg.flushIntervalMs || 5000,
-    );
+    flushTimer = setTimeout(async () => {
+      try {
+        await flushMetrics(cfg);
+      } catch (err) {
+        console.error("Failed to flush MLFlow metrics:", err);
+      }
+      scheduleFlush(cfg);
+    }, cfg.flushIntervalMs || 5000);
   }
 
   return {
@@ -249,7 +242,7 @@ export function createDiagnosticsMlflowService(): OpenClawPluginService {
     async start(ctx) {
       const cfg = (ctx.config.diagnostics?.mlflow as MLFlowConfig | undefined) || {};
 
-      const enabled = cfg.enabled ?? (!!process.env.MLFLOW_TRACKING_URI);
+      const enabled = cfg.enabled ?? !!process.env.MLFLOW_TRACKING_URI;
       if (!enabled) {
         return;
       }
@@ -301,20 +294,23 @@ export function createDiagnosticsMlflowService(): OpenClawPluginService {
             });
 
             // Configure OTLP exporter - explicitly read environment variables
-            const otlpTracesEndpoint = process.env.OTEL_EXPORTER_OTLP_TRACES_ENDPOINT || otlpEndpoint;
+            const otlpTracesEndpoint =
+              process.env.OTEL_EXPORTER_OTLP_TRACES_ENDPOINT || otlpEndpoint;
             const otlpTracesHeaders = process.env.OTEL_EXPORTER_OTLP_TRACES_HEADERS
               ? Object.fromEntries(
-                  process.env.OTEL_EXPORTER_OTLP_TRACES_HEADERS.split(',').map(h => {
-                    const [key, value] = h.split('=');
+                  process.env.OTEL_EXPORTER_OTLP_TRACES_HEADERS.split(",").map((h) => {
+                    const [key, value] = h.split("=");
                     return [key.trim(), value.trim()];
-                  })
+                  }),
                 )
               : {
                   "x-mlflow-experiment-id": experimentId,
                   "x-mlflow-workspace": process.env.POD_NAMESPACE || "openclaw",
                 };
 
-            ctx.logger.info(`OTLP exporter config: endpoint=${otlpTracesEndpoint} headers=${JSON.stringify(otlpTracesHeaders)}`);
+            ctx.logger.info(
+              `OTLP exporter config: endpoint=${otlpTracesEndpoint} headers=${JSON.stringify(otlpTracesHeaders)}`,
+            );
 
             const exporter = new OTLPTraceExporter({
               url: otlpTracesEndpoint,
@@ -354,7 +350,9 @@ export function createDiagnosticsMlflowService(): OpenClawPluginService {
             case "message.queued": {
               // Start root trace for message processing
               if (!tracingInitialized || !tracer) {
-                ctx.logger.warn(`message.queued but tracing not initialized (sessionKey=${evt.sessionKey})`);
+                ctx.logger.warn(
+                  `message.queued but tracing not initialized (sessionKey=${evt.sessionKey})`,
+                );
                 break;
               }
 
@@ -575,11 +573,11 @@ export function createDiagnosticsMlflowService(): OpenClawPluginService {
         // Subscribe to agent events for tool/lifecycle spans
         if (tracesEnabled && tracingInitialized && tracer) {
           unsubscribeAgentEvents = onAgentEvent((evt: AgentEventPayload) => {
-            const trace = evt.sessionKey ? activeTraces.get(evt.sessionKey) : null;
+            const activeTrace = evt.sessionKey ? activeTraces.get(evt.sessionKey) : null;
 
             switch (evt.stream) {
               case "tool": {
-                if (!trace || !tracer) return;
+                if (!activeTrace || !tracer) return;
 
                 const data = evt.data as {
                   phase?: "start" | "end";
@@ -596,14 +594,21 @@ export function createDiagnosticsMlflowService(): OpenClawPluginService {
 
                 if (phase === "start") {
                   try {
-                    const span = tracer.startSpan(`tool.${toolName}`, {
-                      kind: 1,
-                      attributes: {
-                        "tool.name": toolName,
-                        "tool.call_id": toolCallId,
-                        "tool.run_id": evt.runId,
+                    // Create context with parent span for nesting
+                    const parentContext = trace.setSpan(context.active(), activeTrace.span);
+
+                    const span = tracer.startSpan(
+                      `tool.${toolName}`,
+                      {
+                        kind: 1,
+                        attributes: {
+                          "tool.name": toolName,
+                          "tool.call_id": toolCallId,
+                          "tool.run_id": evt.runId,
+                        },
                       },
-                    });
+                      parentContext,
+                    ); // Pass parent context for nesting
 
                     activeSpans.set(toolCallId, span);
                   } catch (error) {
