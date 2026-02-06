@@ -96,7 +96,11 @@ class LoggingTraceExporter implements SpanExporter {
         this.#log.info(`diagnostics-otel: failed to write dump file: ${String(err)}`);
       }
     }
-    this.#inner.export(spans, resultCallback);
+    try {
+      this.#inner.export(spans, resultCallback);
+    } catch (err) {
+      resultCallback({ code: 1, error: err as Error });
+    }
   }
 
   async shutdown() {
