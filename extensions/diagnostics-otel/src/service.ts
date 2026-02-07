@@ -601,8 +601,8 @@ export function createDiagnosticsOtelService(): OpenClawPluginService {
               channel: evt.channel,
             });
 
-            ctx.logger.debug(
-              `diagnostics-otel: created root span for session=${evt.sessionKey} agent=${agentId}`,
+            ctx.logger.info(
+              `diagnostics-otel: created root span for session=${evt.sessionKey} agent=${agentId} (activeTraces size: ${activeTraces.size})`,
             );
           } catch (error) {
             ctx.logger.warn(`Failed to start root trace: ${String(error)}`);
@@ -624,6 +624,9 @@ export function createDiagnosticsOtelService(): OpenClawPluginService {
 
         // End root trace span
         const activeTrace = evt.sessionKey ? activeTraces.get(evt.sessionKey) : null;
+        ctx.logger.info(
+          `diagnostics-otel: message.processed sessionKey=${evt.sessionKey} hasActiveTrace=${!!activeTrace} outcome=${evt.outcome}`,
+        );
         if (activeTrace) {
           try {
             if (evt.outcome === "error" && evt.error) {
@@ -637,9 +640,16 @@ export function createDiagnosticsOtelService(): OpenClawPluginService {
 
             activeTrace.span.end();
             activeTraces.delete(evt.sessionKey!);
+            ctx.logger.info(
+              `diagnostics-otel: ended and removed trace for session=${evt.sessionKey}`,
+            );
           } catch (error) {
             ctx.logger.warn(`Failed to end root trace: ${String(error)}`);
           }
+        } else {
+          ctx.logger.warn(
+            `diagnostics-otel: message.processed but no active trace for sessionKey=${evt.sessionKey}`,
+          );
         }
       };
 
