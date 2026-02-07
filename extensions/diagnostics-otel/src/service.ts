@@ -51,8 +51,6 @@ const GENAI_ATTRS = {
   // MLflow-specific (for MLflow UI columns)
   MLFLOW_TRACE_SESSION: "mlflow.trace.session",
   MLFLOW_TRACE_USER: "mlflow.trace.user",
-  MLFLOW_TRACE_INPUTS: "mlflow.traceInputs",
-  MLFLOW_TRACE_OUTPUTS: "mlflow.traceOutputs",
   MLFLOW_SPAN_INPUTS: "mlflow.spanInputs",
   MLFLOW_SPAN_OUTPUTS: "mlflow.spanOutputs",
 
@@ -460,18 +458,20 @@ export function createDiagnosticsOtelService(): OpenClawPluginService {
         const activeTrace = evt.sessionKey ? activeTraces.get(evt.sessionKey) : null;
         if (activeTrace) {
           try {
-            // CRITICAL: MLflow UI populates Input/Output columns from ROOT SPAN attributes
-            // Set trace-level inputs/outputs on the root span (not child LLM span)
+            // CRITICAL: MLflow UI populates Request/Response columns from ROOT SPAN attributes
+            // Set prompt/completion on root span using OpenAI chat message format
             if (evt.prompt) {
+              activeTrace.span.setAttribute(GENAI_ATTRS.PROMPT, evt.prompt);
               activeTrace.span.setAttribute(
-                GENAI_ATTRS.MLFLOW_TRACE_INPUTS,
-                JSON.stringify({ prompt: evt.prompt }),
+                GENAI_ATTRS.MLFLOW_SPAN_INPUTS,
+                JSON.stringify({ role: "user", content: evt.prompt }),
               );
             }
             if (evt.completion) {
+              activeTrace.span.setAttribute(GENAI_ATTRS.COMPLETION, evt.completion);
               activeTrace.span.setAttribute(
-                GENAI_ATTRS.MLFLOW_TRACE_OUTPUTS,
-                JSON.stringify({ completion: evt.completion }),
+                GENAI_ATTRS.MLFLOW_SPAN_OUTPUTS,
+                JSON.stringify({ role: "assistant", content: evt.completion }),
               );
             }
 
@@ -488,21 +488,12 @@ export function createDiagnosticsOtelService(): OpenClawPluginService {
                   [GENAI_ATTRS.INPUT_TOKENS]: evt.usage?.input || evt.usage?.promptTokens || 0,
                   [GENAI_ATTRS.OUTPUT_TOKENS]: evt.usage?.output || 0,
                   [GENAI_ATTRS.TOTAL_TOKENS]: evt.usage?.total || 0,
-                  [GENAI_ATTRS.PROMPT]: evt.prompt || "",
-                  [GENAI_ATTRS.COMPLETION]: evt.completion || "",
+                  // Prompt and completion for child span (GenAI semantic conventions)
+                  ...(evt.prompt && { [GENAI_ATTRS.PROMPT]: evt.prompt }),
+                  ...(evt.completion && { [GENAI_ATTRS.COMPLETION]: evt.completion }),
                 },
               },
               parentContext,
-            );
-
-            // Set span inputs/outputs for MLflow UI (child span detail view)
-            llmSpan.setAttribute(
-              GENAI_ATTRS.MLFLOW_SPAN_INPUTS,
-              JSON.stringify({ prompt: evt.prompt }),
-            );
-            llmSpan.setAttribute(
-              GENAI_ATTRS.MLFLOW_SPAN_OUTPUTS,
-              JSON.stringify({ completion: evt.completion }),
             );
 
             llmSpan.end();
