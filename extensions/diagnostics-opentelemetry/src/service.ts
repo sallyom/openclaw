@@ -4,15 +4,15 @@
  * Uses official MLflow TypeScript SDK (mlflow-tracing) for MLflow 3.9+
  */
 
-import axios, { type AxiosInstance } from "axios";
 import type {
   AgentEventPayload,
   DiagnosticEventPayload,
   OpenClawPluginService,
 } from "openclaw/plugin-sdk";
-import { onAgentEvent, onDiagnosticEvent } from "openclaw/plugin-sdk";
+import axios, { type AxiosInstance } from "axios";
 import * as mlflow from "mlflow-tracing";
 import { flushTraces, SpanStatusCode, updateCurrentTrace, withSpan } from "mlflow-tracing";
+import { onAgentEvent, onDiagnosticEvent } from "openclaw/plugin-sdk";
 
 interface MLFlowConfig {
   enabled?: boolean;
@@ -80,8 +80,8 @@ export function getMLflowTraceContext(sessionKey?: string): Record<string, strin
   // Return W3C Trace Context headers for distributed tracing
   // These can be used by vLLM and other services that support OpenTelemetry/W3C standards
   return {
-    "traceparent": `00-${trace.requestId}-${trace.rootSpan.span.spanId || "0000000000000000"}-01`,
-    "tracestate": `mlflow=requestId:${trace.requestId}`,
+    traceparent: `00-${trace.requestId}-${trace.rootSpan.span.spanId || "0000000000000000"}-01`,
+    tracestate: `mlflow=requestId:${trace.requestId}`,
     "X-MLflow-Request-Id": trace.requestId,
     "X-MLflow-Span-Id": trace.rootSpan.span.spanId || "",
     "X-Session-Key": sessionKey,
@@ -107,10 +107,7 @@ export function createDiagnosticsMlflowService(): OpenClawPluginService {
   const activeTraces = activeTracesGlobal;
   const activeSpans = new Map<string, ActiveSpan>(); // spanId (toolCallId) -> span
 
-  async function ensureExperiment(
-    cfg: MLFlowConfig,
-    trackingUri: string,
-  ): Promise<string> {
+  async function ensureExperiment(cfg: MLFlowConfig, trackingUri: string): Promise<string> {
     // If experimentId provided directly, use it
     if (cfg.experimentId) {
       return cfg.experimentId;
@@ -206,29 +203,25 @@ export function createDiagnosticsMlflowService(): OpenClawPluginService {
       clearTimeout(flushTimer);
     }
 
-    flushTimer = setTimeout(
-      async () => {
-        try {
-          await flushMetrics(cfg);
-          await flushTracesIfNeeded();
-        } catch (err) {
-          console.error("Failed to flush MLFlow data:", err);
-        }
-        scheduleFlush(cfg);
-      },
-      cfg.flushIntervalMs || 5000,
-    );
+    flushTimer = setTimeout(async () => {
+      try {
+        await flushMetrics(cfg);
+        await flushTracesIfNeeded();
+      } catch (err) {
+        console.error("Failed to flush MLFlow data:", err);
+      }
+      scheduleFlush(cfg);
+    }, cfg.flushIntervalMs || 5000);
   }
 
-
   return {
-    id: "diagnostics-mlflow",
+    id: "diagnostics-opentelemetry",
 
     async start(ctx) {
       const cfg = (ctx.config.diagnostics?.mlflow as MLFlowConfig | undefined) || {};
 
       // Enable if explicitly configured, or if MLFLOW_TRACKING_URI env var is set
-      const enabled = cfg.enabled ?? (!!process.env.MLFLOW_TRACKING_URI);
+      const enabled = cfg.enabled ?? !!process.env.MLFLOW_TRACKING_URI;
       if (!enabled) {
         return;
       }
@@ -292,7 +285,9 @@ export function createDiagnosticsMlflowService(): OpenClawPluginService {
             case "message.queued": {
               // Start root trace for message processing
               if (!tracingInitialized) {
-                ctx.logger.warn(`message.queued but tracing not initialized (sessionKey=${evt.sessionKey})`);
+                ctx.logger.warn(
+                  `message.queued but tracing not initialized (sessionKey=${evt.sessionKey})`,
+                );
                 break;
               }
 
@@ -313,7 +308,7 @@ export function createDiagnosticsMlflowService(): OpenClawPluginService {
                   spanType: mlflow.SpanType.CHAIN,
                   inputs: {
                     session_key: evt.sessionKey,
-                    user_id: agentId,  // Add user to inputs for MLflow UI
+                    user_id: agentId, // Add user to inputs for MLflow UI
                     channel: evt.channel,
                     source: evt.source,
                     queue_depth: evt.queueDepth,
@@ -341,7 +336,9 @@ export function createDiagnosticsMlflowService(): OpenClawPluginService {
                   `MLflow trace started with attributes: mlflow.trace.session=${evt.sessionKey} mlflow.trace.user=${agentId}`,
                 );
 
-                ctx.logger.info(`MLflow span created: spanId=${rootSpan.spanId} traceId=${rootSpan.traceId}`);
+                ctx.logger.info(
+                  `MLflow span created: spanId=${rootSpan.spanId} traceId=${rootSpan.traceId}`,
+                );
 
                 // Store trace with agentId for later tag setting (after flush)
                 activeTraces.set(evt.sessionKey, {
@@ -742,7 +739,10 @@ export function createDiagnosticsMlflowService(): OpenClawPluginService {
                     },
                   });
 
-                  errorSpan.setStatus(SpanStatusCode.ERROR, data.error || data.message || "Unknown error");
+                  errorSpan.setStatus(
+                    SpanStatusCode.ERROR,
+                    data.error || data.message || "Unknown error",
+                  );
                   errorSpan.end({
                     outputs: { error: data.error, message: data.message, stack: data.stack },
                   });
@@ -756,10 +756,10 @@ export function createDiagnosticsMlflowService(): OpenClawPluginService {
         }
 
         ctx.logger.info(
-          `diagnostics-mlflow: started (metrics${tracesEnabled && tracingInitialized ? " + traces" : ""})`,
+          `diagnostics-opentelemetry: started (metrics${tracesEnabled && tracingInitialized ? " + traces" : ""})`,
         );
       } catch (error) {
-        ctx.logger.error(`diagnostics-mlflow: failed to start: ${String(error)}`);
+        ctx.logger.error(`diagnostics-opentelemetry: failed to start: ${String(error)}`);
         throw error;
       }
     },

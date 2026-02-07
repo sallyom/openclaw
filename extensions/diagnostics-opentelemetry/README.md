@@ -1,6 +1,6 @@
-# MLflow Observability for OpenClaw
+# OpenTelemetry Observability for OpenClaw
 
-OpenClaw integrates with MLflow to provide comprehensive observability for LLM applications, tracking model usage, costs, latency, and full trace data with session and user context.
+OpenClaw integrates with OpenTelemetry (OTLP) to export comprehensive observability data to platforms like MLflow, Jaeger, Grafana, and others. Track model usage, costs, latency, and full trace data with session and user context.
 
 ## Features
 
@@ -36,18 +36,18 @@ Add to your `openclaw.json`:
 
 ### Configuration Options
 
-| Option | Type | Default | Description |
-|--------|------|---------|-------------|
-| `enabled` | boolean | `false` | Enable MLflow integration |
-| `trackingUri` | string | - | MLflow server URL |
-| `experimentName` | string | `"openclaw-default"` | Experiment name |
-| `experimentId` | string | - | Experiment ID (alternative to name) |
-| `trackTokenUsage` | boolean | `true` | Track token consumption |
-| `trackCosts` | boolean | `true` | Track LLM costs |
-| `trackLatency` | boolean | `true` | Track processing times |
-| `trackTraces` | boolean | `true` | Enable trace/span tracking |
-| `batchSize` | number | `100` | Batch size for metrics |
-| `flushIntervalMs` | number | `5000` | Flush interval in milliseconds |
+| Option            | Type    | Default              | Description                         |
+| ----------------- | ------- | -------------------- | ----------------------------------- |
+| `enabled`         | boolean | `false`              | Enable MLflow integration           |
+| `trackingUri`     | string  | -                    | MLflow server URL                   |
+| `experimentName`  | string  | `"openclaw-default"` | Experiment name                     |
+| `experimentId`    | string  | -                    | Experiment ID (alternative to name) |
+| `trackTokenUsage` | boolean | `true`               | Track token consumption             |
+| `trackCosts`      | boolean | `true`               | Track LLM costs                     |
+| `trackLatency`    | boolean | `true`               | Track processing times              |
+| `trackTraces`     | boolean | `true`               | Enable trace/span tracking          |
+| `batchSize`       | number  | `100`                | Batch size for metrics              |
+| `flushIntervalMs` | number  | `5000`               | Flush interval in milliseconds      |
 
 ### Environment Variables
 
@@ -64,14 +64,14 @@ After configuration, traces will appear in your MLflow experiment with the follo
 
 ### Traces Tab
 
-| Column | Example Value | Description |
-|--------|---------------|-------------|
-| Session | `agent:shadowman:main` | Session key for grouping conversations |
-| User | `shadowman` | Agent ID that processed the message |
-| Prompt | "Hello, how are you?" | User's message (preview) |
-| Model | `claude-sonnet-4.5` | LLM model used |
-| Status | ✅ Success | Trace outcome |
-| Duration | 2.3s | Total processing time |
+| Column   | Example Value          | Description                            |
+| -------- | ---------------------- | -------------------------------------- |
+| Session  | `agent:shadowman:main` | Session key for grouping conversations |
+| User     | `shadowman`            | Agent ID that processed the message    |
+| Prompt   | "Hello, how are you?"  | User's message (preview)               |
+| Model    | `claude-sonnet-4.5`    | LLM model used                         |
+| Status   | ✅ Success             | Trace outcome                          |
+| Duration | 2.3s                   | Total processing time                  |
 
 ### Filtering Traces
 
@@ -101,6 +101,7 @@ Click on a trace to see the full execution flow:
 MLflow automatically tracks these metrics:
 
 ### Token Metrics
+
 - `tokens.input` - Input tokens consumed
 - `tokens.output` - Output tokens generated
 - `tokens.total` - Total tokens used
@@ -108,13 +109,16 @@ MLflow automatically tracks these metrics:
 - `tokens.cache_write` - Cache write tokens
 
 ### Cost Metrics
+
 - `cost.usd` - Total cost in USD
 
 ### Latency Metrics
+
 - `latency.model_ms` - LLM inference time
 - `latency.message_ms` - Total message processing time
 
 ### Usage Metrics
+
 - `model.{model_name}.requests` - Request count per model
 - `message.outcome.{outcome}` - Messages by outcome (completed/error)
 
@@ -131,16 +135,16 @@ spec:
   template:
     spec:
       containers:
-      - name: gateway
-        image: quay.io/your-org/openclaw:latest
-        env:
-        - name: MLFLOW_TRACKING_URI
-          valueFrom:
-            secretKeyRef:
-              name: openclaw-secrets
-              key: MLFLOW_TRACKING_URI
-        - name: MLFLOW_EXPERIMENT_NAME
-          value: "OpenClaw"
+        - name: gateway
+          image: quay.io/your-org/openclaw:latest
+          env:
+            - name: MLFLOW_TRACKING_URI
+              valueFrom:
+                secretKeyRef:
+                  name: openclaw-secrets
+                  key: MLFLOW_TRACKING_URI
+            - name: MLFLOW_EXPERIMENT_NAME
+              value: "OpenClaw"
 ```
 
 ### Docker
@@ -167,6 +171,7 @@ docker logs <container-id> | grep -i mlflow
 ```
 
 Expected output:
+
 ```
 MLFlow experiment ID: 4
 MLflow tracing SDK initialized
@@ -189,6 +194,7 @@ Flushed trace ... to MLflow
 ### Traces not appearing
 
 **Check configuration:**
+
 ```bash
 # Verify plugin is enabled
 cat ~/.openclaw/openclaw.json | jq '.diagnostics.mlflow.enabled'
@@ -198,6 +204,7 @@ cat ~/.openclaw/openclaw.json | jq '.diagnostics.mlflow.trackingUri'
 ```
 
 **Check logs:**
+
 ```bash
 # Look for initialization
 oc logs <pod> -c gateway | grep "MLflow tracing SDK initialized"
@@ -207,6 +214,7 @@ oc logs <pod> -c gateway | grep "Creating MLflow trace"
 ```
 
 **Common issues:**
+
 - MLflow tracking URI incorrect or unreachable
 - Experiment doesn't exist (check experiment ID/name)
 - Network/firewall blocking gateway → MLflow communication
@@ -214,6 +222,7 @@ oc logs <pod> -c gateway | grep "Creating MLflow trace"
 ### Session/User columns blank
 
 **Verify metadata is being set:**
+
 ```bash
 oc logs <pod> -c gateway | grep "Set trace metadata"
 ```
@@ -221,12 +230,14 @@ oc logs <pod> -c gateway | grep "Set trace metadata"
 Expected: `Set trace metadata: mlflow.trace.session=... mlflow.trace.user=...`
 
 **Check MLflow version:**
+
 - Session/user tracking requires MLflow 2.0+
 - Verify experiment is using SQL backend (not file-based)
 
 ### High latency
 
 **Reduce flush interval:**
+
 ```json
 {
   "diagnostics": {

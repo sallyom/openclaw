@@ -107,7 +107,7 @@ const activeTracesGlobal = new Map<string, ActiveTrace>();
  * Get trace context for external service propagation (e.g., vLLM)
  * Returns W3C trace context headers
  */
-export function getMLflowTraceContext(sessionKey?: string): Record<string, string> | null {
+export function getOtelTraceContext(sessionKey?: string): Record<string, string> | null {
   if (!sessionKey || !activeTracesGlobal.has(sessionKey)) {
     return null;
   }
@@ -126,7 +126,7 @@ export function getMLflowTraceContext(sessionKey?: string): Record<string, strin
   };
 }
 
-export function createDiagnosticsMlflowService(): OpenClawPluginService {
+export function createDiagnosticsOtelService(): OpenClawPluginService {
   let client: AxiosInstance | null = null;
   let experimentId: string | null = null;
   let runId: string | null = null;
@@ -237,7 +237,7 @@ export function createDiagnosticsMlflowService(): OpenClawPluginService {
   }
 
   return {
-    id: "diagnostics-mlflow",
+    id: "diagnostics-opentelemetry",
 
     async start(ctx) {
       const cfg = (ctx.config.diagnostics?.mlflow as MLFlowConfig | undefined) || {};
@@ -637,17 +637,17 @@ export function createDiagnosticsMlflowService(): OpenClawPluginService {
               }
 
               case "error": {
-                if (!trace) return;
+                if (!activeTrace) return;
 
                 const data = evt.data as { error?: string; message?: string; stack?: string };
                 try {
                   // Record error event on the parent span
-                  trace.span.recordException({
+                  activeTrace.span.recordException({
                     name: data.error || data.message || "Unknown error",
                     message: data.message,
                     stack: data.stack,
                   });
-                  trace.span.setStatus({
+                  activeTrace.span.setStatus({
                     code: SpanStatusCode.ERROR,
                     message: data.error || data.message || "Unknown error",
                   });
@@ -661,10 +661,10 @@ export function createDiagnosticsMlflowService(): OpenClawPluginService {
         }
 
         ctx.logger.info(
-          `diagnostics-mlflow: started (metrics${tracesEnabled && tracingInitialized ? " + OTLP traces" : ""})`,
+          `diagnostics-opentelemetry: started (metrics${tracesEnabled && tracingInitialized ? " + OTLP traces" : ""})`,
         );
       } catch (error) {
-        ctx.logger.error(`diagnostics-mlflow: failed to start: ${String(error)}`);
+        ctx.logger.error(`diagnostics-opentelemetry: failed to start: ${String(error)}`);
         throw error;
       }
     },
