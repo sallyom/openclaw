@@ -258,10 +258,14 @@ export type {
   DiagnosticSessionState,
   DiagnosticSessionStateEvent,
   DiagnosticSessionStuckEvent,
+  DiagnosticToolExecutionEvent,
   DiagnosticUsageEvent,
   DiagnosticWebhookErrorEvent,
   DiagnosticWebhookProcessedEvent,
   DiagnosticWebhookReceivedEvent,
+  GenAiMessage,
+  GenAiPart,
+  GenAiToolDef,
 } from "../infra/diagnostic-events.js";
 export { detectMime, extensionForMime, getFileExtension } from "../media/mime.js";
 export { extractOriginalFilename } from "../media/store.js";
