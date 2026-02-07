@@ -769,7 +769,7 @@ export function createDiagnosticsOtelService(): OpenClawPluginService {
           switch (evt.stream) {
             case "tool": {
               const data = evt.data as {
-                phase?: "start" | "end";
+                phase?: "start" | "end" | "result";
                 name?: string;
                 toolCallId?: string;
                 args?: Record<string, unknown>;
@@ -810,10 +810,13 @@ export function createDiagnosticsOtelService(): OpenClawPluginService {
                   );
 
                   activeSpans.set(toolCallId, span);
+                  ctx.logger.info(
+                    `diagnostics-otel: started tool span tool.${toolName} callId=${toolCallId}`,
+                  );
                 } catch (error) {
                   ctx.logger.warn(`Failed to start tool span for ${toolName}: ${String(error)}`);
                 }
-              } else if (phase === "end") {
+              } else if (phase === "end" || phase === "result") {
                 const span = activeSpans.get(toolCallId);
                 if (span) {
                   try {
@@ -823,10 +826,17 @@ export function createDiagnosticsOtelService(): OpenClawPluginService {
                       span.setStatus({ code: SpanStatusCode.OK });
                     }
                     span.end();
+                    ctx.logger.info(
+                      `diagnostics-otel: ended tool span tool.${toolName} callId=${toolCallId}`,
+                    );
                   } catch (error) {
                     ctx.logger.warn(`Failed to end tool span for ${toolName}: ${String(error)}`);
                   }
                   activeSpans.delete(toolCallId);
+                } else {
+                  ctx.logger.warn(
+                    `diagnostics-otel: no active span found for tool.${toolName} callId=${toolCallId} phase=${phase}`,
+                  );
                 }
               }
               break;
