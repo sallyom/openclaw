@@ -2,7 +2,6 @@
   "name": "@openclaw/diagnostics-otel",
   "version": "2026.2.6-3",
   "description": "OpenClaw diagnostics OpenTelemetry exporter",
-  "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "scripts": {
