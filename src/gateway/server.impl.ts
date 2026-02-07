@@ -19,6 +19,7 @@ import {
   writeConfigFile,
 } from "../config/config.js";
 import { applyPluginAutoEnable } from "../config/plugin-auto-enable.js";
+import { startOpenTelemetryDiagnostics } from "../diagnostics/opentelemetry/service.js";
 import { clearAgentRunContext, onAgentEvent } from "../infra/agent-events.js";
 import {
   ensureControlUiAssetsBuilt,
@@ -222,6 +223,15 @@ export async function startGatewayServer(
   if (diagnosticsEnabled) {
     startDiagnosticHeartbeat();
   }
+
+  // Start OpenTelemetry diagnostics (if enabled)
+  let stopOpenTelemetry: (() => Promise<void>) | null = null;
+  try {
+    stopOpenTelemetry = await startOpenTelemetryDiagnostics(cfgAtStart, log);
+  } catch (err) {
+    log.warn(`Failed to start OpenTelemetry diagnostics: ${String(err)}`);
+  }
+
   setGatewaySigusr1RestartPolicy({ allowExternal: cfgAtStart.commands?.restart === true });
   initSubagentRegistry();
   const defaultAgentId = resolveDefaultAgentId(cfgAtStart);
@@ -626,6 +636,9 @@ export async function startGatewayServer(
     close: async (opts) => {
       if (diagnosticsEnabled) {
         stopDiagnosticHeartbeat();
+      }
+      if (stopOpenTelemetry) {
+        await stopOpenTelemetry();
       }
       if (skillsRefreshTimer) {
         clearTimeout(skillsRefreshTimer);

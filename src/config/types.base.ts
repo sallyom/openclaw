@@ -133,10 +133,12 @@ export type DiagnosticsCacheTraceConfig = {
   includeSystem?: boolean;
 };
 
-export type DiagnosticsMlflowConfig = {
+export type DiagnosticsOpenTelemetryConfig = {
   enabled?: boolean;
   trackingUri?: string;
   experimentName?: string;
+  experimentId?: string;
+  otlpEndpoint?: string;
   artifactLocation?: string;
   tags?: Record<string, string>;
   trackTokenUsage?: boolean;
@@ -147,28 +149,14 @@ export type DiagnosticsMlflowConfig = {
   flushIntervalMs?: number;
 };
 
-export type DiagnosticsLangfuseConfig = {
-  enabled?: boolean;
-  publicKey?: string;
-  secretKey?: string;
-  baseUrl?: string;
-  release?: string;
-  environment?: string;
-  flushAt?: number;
-  flushInterval?: number;
-  requestTimeout?: number;
-};
-
 export type DiagnosticsConfig = {
   enabled?: boolean;
   /** Optional ad-hoc diagnostics flags (e.g. "telegram.http"). */
   flags?: string[];
   otel?: DiagnosticsOtelConfig;
   cacheTrace?: DiagnosticsCacheTraceConfig;
-  /** MLflow configuration (defined by diagnostics-mlflow plugin). */
-  mlflow?: DiagnosticsMlflowConfig;
-  /** Langfuse configuration (defined by diagnostics-langfuse plugin). */
-  langfuse?: DiagnosticsLangfuseConfig;
+  /** OpenTelemetry configuration (defined by diagnostics-opentelemetry plugin). */
+  opentelemetry?: DiagnosticsOpenTelemetryConfig;
 };
 
 export type WebReconnectConfig = {

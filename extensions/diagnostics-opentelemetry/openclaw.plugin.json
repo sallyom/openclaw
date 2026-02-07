@@ -1,8 +1,0 @@
-{
-  "id": "diagnostics-opentelemetry",
-  "configSchema": {
-    "type": "object",
-    "additionalProperties": false,
-    "properties": {}
-  }
-}
