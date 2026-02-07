@@ -51,6 +51,8 @@ const GENAI_ATTRS = {
   // MLflow-specific (for MLflow UI columns)
   MLFLOW_TRACE_SESSION: "mlflow.trace.session",
   MLFLOW_TRACE_USER: "mlflow.trace.user",
+  MLFLOW_TRACE_INPUTS: "mlflow.traceInputs",
+  MLFLOW_TRACE_OUTPUTS: "mlflow.traceOutputs",
   MLFLOW_SPAN_INPUTS: "mlflow.spanInputs",
   MLFLOW_SPAN_OUTPUTS: "mlflow.spanOutputs",
 
@@ -458,6 +460,21 @@ export function createDiagnosticsOtelService(): OpenClawPluginService {
         const activeTrace = evt.sessionKey ? activeTraces.get(evt.sessionKey) : null;
         if (activeTrace) {
           try {
+            // CRITICAL: MLflow UI populates Input/Output columns from ROOT SPAN attributes
+            // Set trace-level inputs/outputs on the root span (not child LLM span)
+            if (evt.prompt) {
+              activeTrace.span.setAttribute(
+                GENAI_ATTRS.MLFLOW_TRACE_INPUTS,
+                JSON.stringify({ prompt: evt.prompt }),
+              );
+            }
+            if (evt.completion) {
+              activeTrace.span.setAttribute(
+                GENAI_ATTRS.MLFLOW_TRACE_OUTPUTS,
+                JSON.stringify({ completion: evt.completion }),
+              );
+            }
+
             const parentContext = trace.setSpan(context.active(), activeTrace.span);
 
             const llmSpan = tracer.startSpan(
@@ -478,7 +495,7 @@ export function createDiagnosticsOtelService(): OpenClawPluginService {
               parentContext,
             );
 
-            // Set span inputs/outputs for MLflow UI
+            // Set span inputs/outputs for MLflow UI (child span detail view)
             llmSpan.setAttribute(
               GENAI_ATTRS.MLFLOW_SPAN_INPUTS,
               JSON.stringify({ prompt: evt.prompt }),
