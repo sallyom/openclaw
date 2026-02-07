@@ -758,8 +758,6 @@ export function createDiagnosticsOtelService(): OpenClawPluginService {
 
           switch (evt.stream) {
             case "tool": {
-              if (!activeTrace) return;
-
               const data = evt.data as {
                 phase?: "start" | "end";
                 name?: string;
@@ -768,6 +766,17 @@ export function createDiagnosticsOtelService(): OpenClawPluginService {
                 result?: unknown;
                 error?: string;
               };
+
+              ctx.logger.info(
+                `diagnostics-otel: agent event tool ${data.phase} name=${data.name} sessionKey=${evt.sessionKey} hasActiveTrace=${!!activeTrace}`,
+              );
+
+              if (!activeTrace) {
+                ctx.logger.warn(
+                  `diagnostics-otel: no active trace for tool event sessionKey=${evt.sessionKey} phase=${data.phase} name=${data.name}`,
+                );
+                return;
+              }
 
               const phase = data.phase;
               const toolName = data.name || "unknown";
