@@ -52,10 +52,11 @@ const resolvePluginSdkAlias = (): string | null => {
     for (let i = 0; i < 6; i += 1) {
       const srcCandidate = path.join(cursor, "src", "plugin-sdk", "index.ts");
       const distCandidate = path.join(cursor, "dist", "plugin-sdk", "index.js");
-      // CRITICAL: Always prefer SOURCE over dist to avoid dual-package hazard
-      // The bundled dist/plugin-sdk has separate copies of diagnostic-events
-      // Using source ensures jiti-loaded plugins share the same module instances
-      const orderedCandidates = [srcCandidate, distCandidate];
+      const orderedCandidates = isProduction
+        ? isTest
+          ? [distCandidate, srcCandidate]
+          : [distCandidate]
+        : [srcCandidate, distCandidate];
       for (const candidate of orderedCandidates) {
         if (fs.existsSync(candidate)) {
           return candidate;
