@@ -230,6 +230,7 @@ export {
   isDiagnosticsEnabled,
   onDiagnosticEvent,
 } from "../infra/diagnostic-events.js";
+export { emitAgentEvent, onAgentEvent } from "../infra/agent-events.js";
 export type {
   DiagnosticEventPayload,
   DiagnosticHeartbeatEvent,
@@ -250,6 +251,7 @@ export type {
   GenAiPart,
   GenAiToolDef,
 } from "../infra/diagnostic-events.js";
+export type { AgentEventPayload } from "../infra/agent-events.js";
 export { detectMime, extensionForMime, getFileExtension } from "../media/mime.js";
 export { extractOriginalFilename } from "../media/store.js";
 
