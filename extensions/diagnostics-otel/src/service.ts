@@ -2,7 +2,7 @@ import type { SeverityNumber } from "@opentelemetry/api-logs";
 import type { ExportResult } from "@opentelemetry/core";
 import type { DiagnosticEventPayload, OpenClawPluginService } from "openclaw/plugin-sdk";
 import { context, metrics, trace, SpanKind, SpanStatusCode, type Span } from "@opentelemetry/api";
-import { hrTimeToMilliseconds } from "@opentelemetry/core";
+import { ExportResultCode, hrTimeToMilliseconds } from "@opentelemetry/core";
 import { OTLPLogExporter } from "@opentelemetry/exporter-logs-otlp-http";
 import { OTLPMetricExporter } from "@opentelemetry/exporter-metrics-otlp-http";
 import { OTLPTraceExporter } from "@opentelemetry/exporter-trace-otlp-http";
@@ -136,7 +136,7 @@ class LoggingTraceExporter implements SpanExporter {
     }
     try {
       this.#inner.export(spans, (result) => {
-        if (result.code !== 0) {
+        if (result.code !== ExportResultCode.SUCCESS) {
           this.#log.info(
             `diagnostics-otel: export failed code=${result.code} error=${String(result.error)}`,
           );
@@ -145,7 +145,7 @@ class LoggingTraceExporter implements SpanExporter {
       });
     } catch (err) {
       this.#log.info(`diagnostics-otel: export threw: ${String(err)}`);
-      resultCallback({ code: 1, error: err as Error });
+      resultCallback({ code: ExportResultCode.FAILED, error: err as Error });
     }
   }
 
@@ -587,7 +587,7 @@ export function createDiagnosticsOtelService(): OpenClawPluginService {
         const spanAttrs: Record<string, string | number | string[]> = {
           "openclaw.runId": runId,
           "gen_ai.operation.name": params.operationName ?? "chat",
-          ...(params.attributes ?? {}),
+          ...params.attributes,
         };
         if (params.sessionKey) {
           spanAttrs["openclaw.sessionKey"] = params.sessionKey;
