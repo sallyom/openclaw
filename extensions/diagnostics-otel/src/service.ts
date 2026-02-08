@@ -723,9 +723,11 @@ export function createDiagnosticsOtelService(): OpenClawPluginService {
         }
         if (typeof usage.cacheRead === "number") {
           spanAttrs["openclaw.tokens.cache_read"] = usage.cacheRead;
+          spanAttrs["gen_ai.usage.cache_read.input_tokens"] = usage.cacheRead;
         }
         if (typeof usage.cacheWrite === "number") {
           spanAttrs["openclaw.tokens.cache_write"] = usage.cacheWrite;
+          spanAttrs["gen_ai.usage.cache_creation.input_tokens"] = usage.cacheWrite;
         }
         if (typeof usage.total === "number") {
           spanAttrs["openclaw.tokens.total"] = usage.total;
@@ -931,9 +933,11 @@ export function createDiagnosticsOtelService(): OpenClawPluginService {
         }
         if (typeof usage.cacheRead === "number") {
           spanAttrs["openclaw.tokens.cache_read"] = usage.cacheRead;
+          spanAttrs["gen_ai.usage.cache_read.input_tokens"] = usage.cacheRead;
         }
         if (typeof usage.cacheWrite === "number") {
           spanAttrs["openclaw.tokens.cache_write"] = usage.cacheWrite;
+          spanAttrs["gen_ai.usage.cache_creation.input_tokens"] = usage.cacheWrite;
         }
         if (typeof usage.total === "number") {
           spanAttrs["openclaw.tokens.total"] = usage.total;

@@ -11,7 +11,7 @@
 Enrich the existing `diagnostics-otel` plugin to emit spans, metrics, and events
 that follow the [OTel GenAI semantic conventions](https://opentelemetry.io/docs/specs/semconv/gen-ai/)
 so that OpenClaw telemetry works out-of-the-box with GenAI-aware backends
-(Datadog, Grafana, Langfuse, Arize, etc.) while keeping the existing
+(Datadog, Grafana, Orq, LangWatch, Langfuse, Arize, etc.) while keeping the existing
 `openclaw.*` operational telemetry intact.
 
 ---

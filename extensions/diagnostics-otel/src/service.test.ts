@@ -323,6 +323,8 @@ describe("diagnostics-otel service", () => {
     expect(attrs["openclaw.tokens.input"]).toBe(100);
     expect(attrs["openclaw.tokens.output"]).toBe(50);
     expect(attrs["openclaw.tokens.cache_read"]).toBe(80);
+    expect(attrs["gen_ai.usage.cache_read.input_tokens"]).toBe(80);
+    expect(attrs["gen_ai.usage.cache_creation.input_tokens"]).toBe(0);
 
     await service.stop?.();
   });
