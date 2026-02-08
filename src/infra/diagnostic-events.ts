@@ -56,6 +56,10 @@ export type DiagnosticUsageEvent = DiagnosticBaseEvent & {
   channel?: string;
   provider?: string;
   model?: string;
+  /** User's input prompt/message text (simple format for MLflow UI). */
+  prompt?: string;
+  /** Assistant's response/completion text (simple format for MLflow UI). */
+  completion?: string;
   usage: {
     input?: number;
     output?: number;

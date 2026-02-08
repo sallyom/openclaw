@@ -663,13 +663,29 @@ export function createDiagnosticsOtelService(): OpenClawPluginService {
         if (activeTrace) {
           try {
             // CRITICAL: MLflow UI populates Request/Response columns from ROOT SPAN attributes
-            // Set prompt/completion on root span using OpenAI chat message format
-            if (evt.inputMessages) {
+            // Set prompt/completion on root span - prefer simple text format for MLflow compatibility
+            if (evt.prompt) {
+              activeTrace.span.setAttribute(GENAI_ATTRS.PROMPT, evt.prompt);
+              activeTrace.span.setAttribute(
+                GENAI_ATTRS.MLFLOW_SPAN_INPUTS,
+                JSON.stringify({ role: "user", content: evt.prompt }),
+              );
+            }
+            if (evt.completion) {
+              activeTrace.span.setAttribute(GENAI_ATTRS.COMPLETION, evt.completion);
+              activeTrace.span.setAttribute(
+                GENAI_ATTRS.MLFLOW_SPAN_OUTPUTS,
+                JSON.stringify({ role: "assistant", content: evt.completion }),
+              );
+            }
+
+            // Fallback to GenAI message format if simple text not available
+            if (!evt.prompt && evt.inputMessages) {
               const promptText = JSON.stringify(evt.inputMessages);
               activeTrace.span.setAttribute(GENAI_ATTRS.PROMPT, promptText);
               activeTrace.span.setAttribute(GENAI_ATTRS.MLFLOW_SPAN_INPUTS, promptText);
             }
-            if (evt.outputMessages) {
+            if (!evt.completion && evt.outputMessages) {
               const completionText = JSON.stringify(evt.outputMessages);
               activeTrace.span.setAttribute(GENAI_ATTRS.COMPLETION, completionText);
               activeTrace.span.setAttribute(GENAI_ATTRS.MLFLOW_SPAN_OUTPUTS, completionText);
