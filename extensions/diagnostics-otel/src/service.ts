@@ -969,27 +969,75 @@ export function createDiagnosticsOtelService(): OpenClawPluginService {
         if (!tracesEnabled) {
           return;
         }
-        const spanAttrs: Record<string, string | number> = {
-          "gen_ai.operation.name": "execute_tool",
-          "gen_ai.tool.name": evt.toolName,
-          "gen_ai.tool.type": evt.toolType ?? "function",
-        };
-        if (evt.toolCallId) {
-          spanAttrs["gen_ai.tool.call.id"] = evt.toolCallId;
-        }
-        if (evt.channel) {
-          spanAttrs["openclaw.channel"] = evt.channel;
+
+        // Nest tool span under root message.process span
+        const activeTrace = evt.sessionKey ? activeTraces.get(evt.sessionKey) : null;
+        if (!activeTrace) {
+          if (debugExports) {
+            ctx.logger.info(
+              `diagnostics-otel: no active trace for tool.execution sessionKey=${evt.sessionKey} tool=${evt.toolName}`,
+            );
+          }
+          // Create standalone span as fallback
+          const spanAttrs: Record<string, string | number> = {
+            "gen_ai.operation.name": "execute_tool",
+            "gen_ai.tool.name": evt.toolName,
+            "gen_ai.tool.type": evt.toolType ?? "function",
+          };
+          if (evt.toolCallId) {
+            spanAttrs["gen_ai.tool.call.id"] = evt.toolCallId;
+          }
+          if (evt.channel) {
+            spanAttrs["openclaw.channel"] = evt.channel;
+          }
+          const spanName = `execute_tool ${evt.toolName}`;
+          const span = spanWithDuration(spanName, spanAttrs, evt.durationMs, SpanKind.INTERNAL);
+          if (evt.error) {
+            span.setStatus({ code: SpanStatusCode.ERROR, message: evt.error });
+          }
+          span.end();
+          return;
         }
 
-        const spanName = `execute_tool ${evt.toolName}`;
-        const span = spanWithDuration(spanName, spanAttrs, evt.durationMs, SpanKind.INTERNAL);
-        if (evt.error) {
-          span.setStatus({ code: SpanStatusCode.ERROR, message: evt.error });
+        // Create tool span as child of root span
+        try {
+          const parentContext = trace.setSpan(context.active(), activeTrace.span);
+          const startTime =
+            typeof evt.durationMs === "number"
+              ? Date.now() - Math.max(0, evt.durationMs)
+              : Date.now();
+
+          const span = tracer.startSpan(
+            `tool.${evt.toolName}`,
+            {
+              kind: SpanKind.INTERNAL,
+              startTime,
+              attributes: {
+                "gen_ai.operation.name": "execute_tool",
+                "gen_ai.tool.name": evt.toolName,
+                "gen_ai.tool.type": evt.toolType ?? "function",
+                ...(evt.toolCallId && { "gen_ai.tool.call.id": evt.toolCallId }),
+                ...(evt.channel && { "openclaw.channel": evt.channel }),
+              },
+            },
+            parentContext,
+          );
+
+          if (evt.error) {
+            span.setStatus({ code: SpanStatusCode.ERROR, message: evt.error });
+          } else {
+            span.setStatus({ code: SpanStatusCode.OK });
+          }
+
+          if (debugExports) {
+            ctx.logger.info(`diagnostics-otel: created nested tool span ${evt.toolName}`);
+          }
+          span.end();
+        } catch (error) {
+          ctx.logger.warn(
+            `Failed to create nested tool span for ${evt.toolName}: ${String(error)}`,
+          );
         }
-        if (debugExports) {
-          ctx.logger.info(`diagnostics-otel: span created ${spanName}`);
-        }
-        span.end();
       };
 
       const recordHeartbeat = (

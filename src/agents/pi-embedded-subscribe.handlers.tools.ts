@@ -226,6 +226,9 @@ export function handleToolExecutionEnd(
     toolName,
     toolType: "function",
     toolCallId,
+    sessionKey: ctx.params.sessionKey,
+    sessionId: ctx.params.sessionId,
+    channel: ctx.params.channel,
     durationMs: startTime ? Date.now() - startTime : undefined,
     error: isToolError ? extractToolErrorMessage(sanitizedResult) : undefined,
   });
