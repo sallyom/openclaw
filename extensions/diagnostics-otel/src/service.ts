@@ -607,6 +607,20 @@ export function createDiagnosticsOtelService(): OpenClawPluginService {
           }
         }
 
+        // MLflow-specific attributes for UI compatibility
+        if (evt.sessionKey) {
+          spanAttrs["mlflow.trace.session"] = evt.sessionKey;
+        }
+        if (evt.userId) {
+          spanAttrs["mlflow.trace.user"] = evt.userId;
+        }
+        if (evt.inputMessages) {
+          spanAttrs["mlflow.spanInputs"] = JSON.stringify(evt.inputMessages);
+        }
+        if (evt.outputMessages) {
+          spanAttrs["mlflow.spanOutputs"] = JSON.stringify(evt.outputMessages);
+        }
+
         const spanName = `${opName} ${evt.model ?? "unknown"}`;
         const span = spanWithDuration(spanName, spanAttrs, evt.durationMs, SpanKind.CLIENT);
         if (debugExports) {
