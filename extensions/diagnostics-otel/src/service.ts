@@ -720,6 +720,7 @@ export function createDiagnosticsOtelService(): OpenClawPluginService {
         }
         if (typeof usage.output === "number") {
           spanAttrs["openclaw.tokens.output"] = usage.output;
+          spanAttrs["gen_ai.usage.output_tokens"] = usage.output;
         }
         if (typeof usage.cacheRead === "number") {
           spanAttrs["openclaw.tokens.cache_read"] = usage.cacheRead;
@@ -731,6 +732,13 @@ export function createDiagnosticsOtelService(): OpenClawPluginService {
         }
         if (typeof usage.total === "number") {
           spanAttrs["openclaw.tokens.total"] = usage.total;
+        }
+        // OTEL GenAI semconv: gen_ai.usage.input_tokens SHOULD include all input
+        // tokens including cached tokens. Use promptTokens (input + cacheRead +
+        // cacheWrite) when available, fall back to raw input.
+        const inputTokensForOtel = usage.promptTokens ?? usage.input;
+        if (typeof inputTokensForOtel === "number") {
+          spanAttrs["gen_ai.usage.input_tokens"] = inputTokensForOtel;
         }
         if (evt.responseModel) {
           spanAttrs["gen_ai.response.model"] = evt.responseModel;
@@ -925,7 +933,6 @@ export function createDiagnosticsOtelService(): OpenClawPluginService {
         };
         if (typeof usage.input === "number") {
           spanAttrs["openclaw.tokens.input"] = usage.input;
-          spanAttrs["gen_ai.usage.input_tokens"] = usage.input;
         }
         if (typeof usage.output === "number") {
           spanAttrs["openclaw.tokens.output"] = usage.output;
@@ -941,6 +948,13 @@ export function createDiagnosticsOtelService(): OpenClawPluginService {
         }
         if (typeof usage.total === "number") {
           spanAttrs["openclaw.tokens.total"] = usage.total;
+        }
+        // OTEL GenAI semconv: gen_ai.usage.input_tokens SHOULD include all input
+        // tokens including cached tokens. Use promptTokens (input + cacheRead +
+        // cacheWrite) when available, fall back to raw input.
+        const inputTokensForOtel = usage.promptTokens ?? usage.input;
+        if (typeof inputTokensForOtel === "number") {
+          spanAttrs["gen_ai.usage.input_tokens"] = inputTokensForOtel;
         }
         if (evt.responseModel) {
           spanAttrs["gen_ai.response.model"] = evt.responseModel;
