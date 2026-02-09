@@ -1,7 +1,15 @@
 import type { SeverityNumber } from "@opentelemetry/api-logs";
 import type { ExportResult } from "@opentelemetry/core";
 import type { DiagnosticEventPayload, OpenClawPluginService } from "openclaw/plugin-sdk";
-import { context, metrics, trace, SpanKind, SpanStatusCode, type Span } from "@opentelemetry/api";
+import {
+  context,
+  metrics,
+  trace,
+  SpanKind,
+  SpanStatusCode,
+  type Context,
+  type Span,
+} from "@opentelemetry/api";
 import { ExportResultCode, hrTimeToMilliseconds } from "@opentelemetry/core";
 import { OTLPLogExporter } from "@opentelemetry/exporter-logs-otlp-http";
 import { OTLPMetricExporter } from "@opentelemetry/exporter-metrics-otlp-http";
@@ -277,6 +285,29 @@ export function createDiagnosticsOtelService(): OpenClawPluginService {
 
       const meter = metrics.getMeter("openclaw");
       const tracer = trace.getTracer("openclaw");
+
+      // MLflow-specific attribute constants for UI compatibility
+      const MLFLOW_ATTRS = {
+        PROMPT: "gen_ai.prompt",
+        COMPLETION: "gen_ai.completion",
+        MLFLOW_SPAN_INPUTS: "mlflow.span.inputs",
+        MLFLOW_SPAN_OUTPUTS: "mlflow.span.outputs",
+        MLFLOW_TRACE_SESSION: "mlflow.trace.session",
+        MLFLOW_TRACE_USER: "mlflow.trace.user",
+      };
+
+      // Global trace context registry for W3C Trace Context propagation
+      const TRACE_CONTEXT_REGISTRY_KEY = Symbol.for("openclaw.diagnostics-otel.trace-contexts");
+
+      function getTraceContextRegistry(): Map<string, Context> {
+        const globalStore = globalThis as {
+          [TRACE_CONTEXT_REGISTRY_KEY]?: Map<string, Context>;
+        };
+        if (!globalStore[TRACE_CONTEXT_REGISTRY_KEY]) {
+          globalStore[TRACE_CONTEXT_REGISTRY_KEY] = new Map();
+        }
+        return globalStore[TRACE_CONTEXT_REGISTRY_KEY];
+      }
 
       const tokensCounter = meter.createCounter("openclaw.tokens", {
         unit: "1",
@@ -609,6 +640,13 @@ export function createDiagnosticsOtelService(): OpenClawPluginService {
           context.active(),
         );
         runSpans.set(runId, { span, createdAt: Date.now() });
+
+        // Store trace context for W3C propagation to downstream LLM providers
+        if (params.sessionKey) {
+          const traceContext = trace.setSpan(context.active(), span);
+          getTraceContextRegistry().set(params.sessionKey, traceContext);
+        }
+
         if (debugExports) {
           ctx.logger.info(`diagnostics-otel: span created openclaw.agent.turn`);
         }
@@ -793,8 +831,32 @@ export function createDiagnosticsOtelService(): OpenClawPluginService {
           finalRunSpan.setAttribute("openclaw.error", evt.error);
         }
 
+        // MLflow UI populates Request/Response columns from ROOT SPAN attributes
+        if (evt.prompt) {
+          finalRunSpan.setAttribute(MLFLOW_ATTRS.PROMPT, evt.prompt);
+          finalRunSpan.setAttribute(
+            MLFLOW_ATTRS.MLFLOW_SPAN_INPUTS,
+            JSON.stringify({ role: "user", content: evt.prompt }),
+          );
+        }
+        if (evt.completion) {
+          finalRunSpan.setAttribute(MLFLOW_ATTRS.COMPLETION, evt.completion);
+          finalRunSpan.setAttribute(
+            MLFLOW_ATTRS.MLFLOW_SPAN_OUTPUTS,
+            JSON.stringify({ role: "assistant", content: evt.completion }),
+          );
+        }
+        if (evt.sessionKey) {
+          finalRunSpan.setAttribute(MLFLOW_ATTRS.MLFLOW_TRACE_SESSION, evt.sessionKey);
+        }
+
         finalRunSpan.end();
         runSpans.delete(evt.runId);
+
+        // Clean up trace context from registry
+        if (evt.sessionKey) {
+          getTraceContextRegistry().delete(evt.sessionKey);
+        }
       };
 
       const recordRunStarted = (evt: Extract<DiagnosticEventPayload, { type: "run.started" }>) => {
@@ -1295,6 +1357,8 @@ export function createDiagnosticsOtelService(): OpenClawPluginService {
         await logProvider.shutdown().catch(() => undefined);
         logProvider = null;
       }
+      // Clean up trace context registry
+      getTraceContextRegistry().clear();
       if (sdk) {
         await sdk.shutdown().catch(() => undefined);
         sdk = null;
