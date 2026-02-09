@@ -517,7 +517,10 @@ export async function runEmbeddedAttempt(
       activeSession.agent.streamFn = streamSimple;
 
       // Wrap streamFn to inject W3C Trace Context headers for distributed tracing
-      activeSession.agent.streamFn = wrapStreamFnWithTraceContext(activeSession.agent.streamFn);
+      activeSession.agent.streamFn = wrapStreamFnWithTraceContext(
+        activeSession.agent.streamFn,
+        params.sessionKey,
+      );
 
       applyExtraParamsToAgent(
         activeSession.agent,

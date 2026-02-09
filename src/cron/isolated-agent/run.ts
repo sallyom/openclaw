@@ -42,6 +42,7 @@ import {
 import { createOutboundSendDeps, type CliDeps } from "../../cli/outbound-send-deps.js";
 import { resolveSessionTranscriptPath, updateSessionStore } from "../../config/sessions.js";
 import { registerAgentRunContext } from "../../infra/agent-events.js";
+import { emitDiagnosticEvent } from "../../infra/diagnostic-events.js";
 import { deliverOutboundPayloads } from "../../infra/outbound/deliver.js";
 import { getRemoteSkillEligibility } from "../../infra/skills-remote.js";
 import { logWarn } from "../../logger.js";
@@ -358,6 +359,8 @@ export async function runCronIsolatedAgentTurn(params: {
   let runResult: Awaited<ReturnType<typeof runEmbeddedPiAgent>>;
   let fallbackProvider = provider;
   let fallbackModel = model;
+  const runStartedAt = Date.now();
+  const messageChannel = resolvedDelivery.channel;
   try {
     const sessionFile = resolveSessionTranscriptPath(cronSession.sessionEntry.sessionId, agentId);
     const resolvedVerboseLevel =
@@ -368,7 +371,16 @@ export async function runCronIsolatedAgentTurn(params: {
       sessionKey: agentSessionKey,
       verboseLevel: resolvedVerboseLevel,
     });
-    const messageChannel = resolvedDelivery.channel;
+
+    // Emit message.queued for cron jobs to enable trace nesting
+    emitDiagnosticEvent({
+      type: "message.queued",
+      sessionKey: agentSessionKey,
+      sessionId: cronSession.sessionEntry.sessionId,
+      channel: messageChannel,
+      source: "cron",
+    });
+
     const fallbackResult = await runWithModelFallback({
       cfg: cfgWithAgentDefaults,
       provider,
@@ -420,7 +432,27 @@ export async function runCronIsolatedAgentTurn(params: {
     runResult = fallbackResult.result;
     fallbackProvider = fallbackResult.provider;
     fallbackModel = fallbackResult.model;
+
+    // Emit message.processed for successful cron runs
+    emitDiagnosticEvent({
+      type: "message.processed",
+      sessionKey: agentSessionKey,
+      sessionId: cronSession.sessionEntry.sessionId,
+      channel: messageChannel,
+      durationMs: Date.now() - runStartedAt,
+      outcome: "completed",
+    });
   } catch (err) {
+    // Emit message.processed for failed cron runs
+    emitDiagnosticEvent({
+      type: "message.processed",
+      sessionKey: agentSessionKey,
+      sessionId: cronSession.sessionEntry.sessionId,
+      channel: messageChannel ?? "cron",
+      durationMs: Date.now() - runStartedAt,
+      outcome: "error",
+      error: String(err),
+    });
     return withRunSession({ status: "error", error: String(err) });
   }
 

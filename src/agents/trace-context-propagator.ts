@@ -1,17 +1,36 @@
 import type { StreamFn } from "@mariozechner/pi-agent-core";
-import { context, trace } from "@opentelemetry/api";
+import { context, trace, type Context } from "@opentelemetry/api";
+
+// Global trace context registry key (shared with diagnostics-otel plugin)
+const TRACE_CONTEXT_REGISTRY_KEY = Symbol.for("openclaw.diagnostics-otel.trace-contexts");
+
+function getTraceContextFromRegistry(sessionKey: string): Context | undefined {
+  const globalStore = globalThis as {
+    [TRACE_CONTEXT_REGISTRY_KEY]?: Map<string, Context>;
+  };
+  return globalStore[TRACE_CONTEXT_REGISTRY_KEY]?.get(sessionKey);
+}
 
 /**
  * Wraps a streamFn to inject W3C Trace Context headers into outgoing LLM requests.
  * This enables distributed tracing from OpenClaw -> vLLM (or other LLM providers).
  *
  * @param streamFn - The original stream function to wrap
+ * @param sessionKey - Optional session key to look up trace context from diagnostics-otel plugin
  * @returns A wrapped stream function that injects trace context headers
  */
-export function wrapStreamFnWithTraceContext(streamFn: StreamFn): StreamFn {
+export function wrapStreamFnWithTraceContext(streamFn: StreamFn, sessionKey?: string): StreamFn {
   return (model, messages, options) => {
-    // Get the active OpenTelemetry span context
-    const activeSpan = trace.getSpan(context.active());
+    // Try to get active span from current context first
+    let activeSpan = trace.getSpan(context.active());
+
+    // Fallback: if no active span and we have a sessionKey, try to get trace context from global registry
+    if (!activeSpan && sessionKey) {
+      const traceContext = getTraceContextFromRegistry(sessionKey);
+      if (traceContext) {
+        activeSpan = trace.getSpan(traceContext);
+      }
+    }
 
     if (activeSpan) {
       const spanContext = activeSpan.spanContext();

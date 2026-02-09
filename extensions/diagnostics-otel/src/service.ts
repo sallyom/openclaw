@@ -5,7 +5,15 @@ import type {
   DiagnosticEventPayload,
   OpenClawPluginService,
 } from "openclaw/plugin-sdk";
-import { context, metrics, trace, SpanKind, SpanStatusCode, type Span } from "@opentelemetry/api";
+import {
+  context,
+  metrics,
+  trace,
+  SpanKind,
+  SpanStatusCode,
+  type Context,
+  type Span,
+} from "@opentelemetry/api";
 import { hrTimeToMilliseconds } from "@opentelemetry/core";
 import { OTLPLogExporter } from "@opentelemetry/exporter-logs-otlp-http";
 import { OTLPMetricExporter } from "@opentelemetry/exporter-metrics-otlp-http";
@@ -26,6 +34,7 @@ import { onAgentEvent, onDiagnosticEvent, registerLogTransport } from "openclaw/
 
 interface ActiveTrace {
   span: Span;
+  context: Context;
   startedAt: number;
   sessionKey?: string;
   channel?: string;
@@ -69,6 +78,29 @@ const GENAI_ATTRS = {
 const DEFAULT_SERVICE_NAME = "openclaw";
 const OTEL_DEBUG_ENV = "OPENCLAW_OTEL_DEBUG";
 const OTEL_DUMP_ENV = "OPENCLAW_OTEL_DUMP";
+
+// Global trace context registry for W3C trace propagation
+const TRACE_CONTEXT_REGISTRY_KEY = Symbol.for("openclaw.diagnostics-otel.trace-contexts");
+
+function getTraceContextRegistry(): Map<string, Context> {
+  const globalStore = globalThis as {
+    [TRACE_CONTEXT_REGISTRY_KEY]?: Map<string, Context>;
+  };
+  if (!globalStore[TRACE_CONTEXT_REGISTRY_KEY]) {
+    globalStore[TRACE_CONTEXT_REGISTRY_KEY] = new Map();
+  }
+  return globalStore[TRACE_CONTEXT_REGISTRY_KEY];
+}
+
+/**
+ * Get the active OpenTelemetry trace context for a session.
+ * Used by trace-context-propagator to inject W3C headers into LLM requests.
+ * @param sessionKey - The session key to look up
+ * @returns The OpenTelemetry context with active span, or undefined if not found
+ */
+export function getTraceContextForSession(sessionKey: string): Context | undefined {
+  return getTraceContextRegistry().get(sessionKey);
+}
 
 function normalizeEndpoint(endpoint?: string): string | undefined {
   const trimmed = endpoint?.trim();
@@ -840,13 +872,20 @@ export function createDiagnosticsOtelService(): OpenClawPluginService {
               },
             });
 
+            // Create context with root span as active for W3C trace propagation
+            const traceContext = trace.setSpan(context.active(), rootSpan);
+
             activeTraces.set(evt.sessionKey, {
               span: rootSpan,
+              context: traceContext,
               startedAt: evt.ts || Date.now(),
               sessionKey: evt.sessionKey,
               agentId,
               channel: evt.channel,
             });
+
+            // Store in global registry for W3C trace propagation
+            getTraceContextRegistry().set(evt.sessionKey, traceContext);
 
             if (debugExports) {
               ctx.logger.info(
@@ -887,6 +926,7 @@ export function createDiagnosticsOtelService(): OpenClawPluginService {
 
               activeTrace.span.end();
               activeTraces.delete(evt.sessionKey!);
+              getTraceContextRegistry().delete(evt.sessionKey!);
 
               if (debugExports) {
                 ctx.logger.info(`diagnostics-otel: ended root span for session=${evt.sessionKey}`);
@@ -1093,91 +1133,24 @@ export function createDiagnosticsOtelService(): OpenClawPluginService {
         }
       });
 
-      // Subscribe to agent events for tool span tracking
+      // Subscribe to agent events for error tracking
+      // Note: Tool span tracking is handled by diagnostic events (tool.execution)
+      // to avoid duplicate spans and ensure accurate timing with durationMs
       if (tracesEnabled) {
         unsubscribeAgentEvents = onAgentEvent((evt: AgentEventPayload) => {
           const activeTrace = evt.sessionKey ? activeTraces.get(evt.sessionKey) : null;
 
           switch (evt.stream) {
             case "tool": {
-              const data = evt.data as {
-                phase?: "start" | "end" | "result";
-                name?: string;
-                toolCallId?: string;
-                args?: Record<string, unknown>;
-                result?: unknown;
-                error?: string;
-              };
-
-              if (!activeTrace) {
-                if (debugExports) {
-                  ctx.logger.info(
-                    `diagnostics-otel: no active trace for tool event sessionKey=${evt.sessionKey} phase=${data.phase} name=${data.name}`,
-                  );
-                }
-                return;
-              }
-
-              const phase = data.phase;
-              const toolName = data.name || "unknown";
-              const toolCallId = data.toolCallId || `tool-${Date.now()}`;
-
-              if (phase === "start") {
-                try {
-                  const parentContext = trace.setSpan(context.active(), activeTrace.span);
-
-                  const span = tracer.startSpan(
-                    `tool.${toolName}`,
-                    {
-                      kind: SpanKind.SERVER,
-                      attributes: {
-                        "tool.name": toolName,
-                        "tool.call_id": toolCallId,
-                        "tool.run_id": evt.runId,
-                      },
-                    },
-                    parentContext,
-                  );
-
-                  activeSpans.set(toolCallId, span);
-                  if (debugExports) {
-                    ctx.logger.info(
-                      `diagnostics-otel: started tool span ${toolName} callId=${toolCallId}`,
-                    );
-                  }
-                } catch (error) {
-                  ctx.logger.warn(`Failed to start tool span for ${toolName}: ${String(error)}`);
-                }
-              } else if (phase === "end" || phase === "result") {
-                const span = activeSpans.get(toolCallId);
-                if (span) {
-                  try {
-                    if (data.error) {
-                      span.setStatus({ code: SpanStatusCode.ERROR, message: data.error });
-                    } else {
-                      span.setStatus({ code: SpanStatusCode.OK });
-                    }
-                    span.end();
-                    if (debugExports) {
-                      ctx.logger.info(
-                        `diagnostics-otel: ended tool span ${toolName} callId=${toolCallId}`,
-                      );
-                    }
-                  } catch (error) {
-                    ctx.logger.warn(`Failed to end tool span for ${toolName}: ${String(error)}`);
-                  }
-                  activeSpans.delete(toolCallId);
-                } else if (debugExports) {
-                  ctx.logger.info(
-                    `diagnostics-otel: no active span found for tool.${toolName} callId=${toolCallId} phase=${phase}`,
-                  );
-                }
-              }
+              // Tool spans are created by diagnostic events (tool.execution) handler
+              // Skip agent event tool tracking to avoid duplicates
               break;
             }
 
             case "error": {
-              if (!activeTrace) return;
+              if (!activeTrace) {
+                return;
+              }
 
               const data = evt.data as { error?: string; message?: string; stack?: string };
               try {
@@ -1227,6 +1200,7 @@ export function createDiagnosticsOtelService(): OpenClawPluginService {
         }
       }
       activeTraces.clear();
+      getTraceContextRegistry().clear();
       stopLogTransport?.();
       stopLogTransport = null;
       if (logProvider) {
