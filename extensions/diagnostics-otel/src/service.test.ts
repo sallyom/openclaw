@@ -299,7 +299,14 @@ describe("diagnostics-otel service", () => {
       finishReasons: ["stop"],
       sessionKey: "agent:main:main",
       sessionId: "sess-001",
-      usage: { input: 100, output: 50, cacheRead: 80, cacheWrite: 0, total: 230 },
+      usage: {
+        input: 100,
+        output: 50,
+        cacheRead: 80,
+        cacheWrite: 0,
+        promptTokens: 180,
+        total: 230,
+      },
       durationMs: 1500,
     });
 
@@ -325,6 +332,10 @@ describe("diagnostics-otel service", () => {
     expect(attrs["openclaw.tokens.cache_read"]).toBe(80);
     expect(attrs["gen_ai.usage.cache_read.input_tokens"]).toBe(80);
     expect(attrs["gen_ai.usage.cache_creation.input_tokens"]).toBe(0);
+    // gen_ai.usage.input_tokens should be promptTokens (input + cacheRead + cacheWrite)
+    // per OTEL semconv, not raw input which excludes cached tokens
+    expect(attrs["gen_ai.usage.input_tokens"]).toBe(180);
+    expect(attrs["gen_ai.usage.output_tokens"]).toBe(50);
 
     await service.stop?.();
   });
