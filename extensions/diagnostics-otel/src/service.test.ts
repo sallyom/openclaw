@@ -200,11 +200,13 @@ describe("diagnostics-otel service", () => {
       type: "message.queued",
       channel: "telegram",
       source: "telegram",
+      sessionKey: "telegram:test-agent:123",
       queueDepth: 2,
     });
     emitDiagnosticEvent({
       type: "message.processed",
       channel: "telegram",
+      sessionKey: "telegram:test-agent:123",
       outcome: "completed",
       durationMs: 55,
     });
@@ -243,7 +245,10 @@ describe("diagnostics-otel service", () => {
 
     const spanNames = telemetryState.tracer.startSpan.mock.calls.map((call) => call[0]);
     expect(spanNames).toContain("openclaw.webhook.processed");
-    expect(spanNames).toContain("openclaw.message.processed");
+    // message.processed no longer creates its own span — it ends the root
+    // trace span started by message.queued (nesting approach).
+    expect(spanNames).toContain("openclaw.message");
+    expect(spanNames).not.toContain("openclaw.message.processed");
     expect(spanNames).toContain("openclaw.session.stuck");
 
     expect(registerLogTransportMock).toHaveBeenCalledTimes(1);
@@ -321,7 +326,7 @@ describe("diagnostics-otel service", () => {
     expect(attrs["gen_ai.response.id"]).toBe("chatcmpl-abc123");
     expect(attrs["gen_ai.response.model"]).toBe("gpt-5.2-2025-06-01");
     expect(attrs["gen_ai.response.finish_reasons"]).toEqual(["stop"]);
-    expect(attrs["gen_ai.conversation.id"]).toBe("agent:main:main");
+    expect(attrs["gen_ai.conversation.id"]).toBe("sess-001");
 
     // openclaw.* attributes preserved
     expect(attrs["openclaw.channel"]).toBe("webchat");
