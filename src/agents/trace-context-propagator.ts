@@ -1,50 +1,41 @@
 import type { StreamFn } from "@mariozechner/pi-agent-core";
-import { context, trace, type Context } from "@opentelemetry/api";
 
 // Global trace context registry key (shared with diagnostics-otel plugin)
-const TRACE_CONTEXT_REGISTRY_KEY = Symbol.for("openclaw.diagnostics-otel.trace-contexts");
+// The plugin stores pre-formatted W3C Trace Context headers here
+const TRACE_CONTEXT_REGISTRY_KEY = Symbol.for("openclaw.diagnostics-otel.trace-headers");
 
-function getTraceContextFromRegistry(sessionKey: string): Context | undefined {
+type TraceHeaders = {
+  traceparent: string;
+  tracestate?: string;
+};
+
+function getTraceHeadersFromRegistry(sessionKey: string): TraceHeaders | undefined {
   const globalStore = globalThis as {
-    [TRACE_CONTEXT_REGISTRY_KEY]?: Map<string, Context>;
+    [TRACE_CONTEXT_REGISTRY_KEY]?: Map<string, TraceHeaders>;
   };
   return globalStore[TRACE_CONTEXT_REGISTRY_KEY]?.get(sessionKey);
 }
 
 export function wrapStreamFnWithTraceContext(streamFn: StreamFn, sessionKey?: string): StreamFn {
   return (model, messages, options) => {
-    let activeSpan = trace.getSpan(context.active());
-
-    if (!activeSpan && sessionKey) {
-      const traceContext = getTraceContextFromRegistry(sessionKey);
-      if (traceContext) {
-        activeSpan = trace.getSpan(traceContext);
-      }
+    if (!sessionKey) {
+      return streamFn(model, messages, options);
     }
 
-    if (activeSpan) {
-      const spanContext = activeSpan.spanContext();
-
-      if (spanContext.traceId && spanContext.spanId) {
-        const traceparent = `00-${spanContext.traceId}-${spanContext.spanId}-${spanContext.traceFlags
-          .toString(16)
-          .padStart(2, "0")}`;
-
-        const headersWithTrace = {
-          ...options?.headers,
-          traceparent,
-          ...(spanContext.traceState && {
-            tracestate: spanContext.traceState.serialize(),
-          }),
-        };
-
-        return streamFn(model, messages, {
-          ...options,
-          headers: headersWithTrace,
-        });
-      }
+    const traceHeaders = getTraceHeadersFromRegistry(sessionKey);
+    if (!traceHeaders) {
+      return streamFn(model, messages, options);
     }
 
-    return streamFn(model, messages, options);
+    const headersWithTrace = {
+      ...options?.headers,
+      traceparent: traceHeaders.traceparent,
+      ...(traceHeaders.tracestate && { tracestate: traceHeaders.tracestate }),
+    };
+
+    return streamFn(model, messages, {
+      ...options,
+      headers: headersWithTrace,
+    });
   };
 }

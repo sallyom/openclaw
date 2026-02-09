@@ -359,6 +359,9 @@ export async function runCronIsolatedAgentTurn(params: {
   let runResult: Awaited<ReturnType<typeof runEmbeddedPiAgent>>;
   let fallbackProvider = provider;
   let fallbackModel = model;
+  const messageChannel = resolvedDelivery.channel;
+  const runStartedAt = Date.now();
+
   try {
     const sessionFile = resolveSessionTranscriptPath(cronSession.sessionEntry.sessionId, agentId);
     const resolvedVerboseLevel =
@@ -369,10 +372,8 @@ export async function runCronIsolatedAgentTurn(params: {
       sessionKey: agentSessionKey,
       verboseLevel: resolvedVerboseLevel,
     });
-    const messageChannel = resolvedDelivery.channel;
 
     // Emit diagnostic event for trace instrumentation
-    const runStartedAt = Date.now();
     emitDiagnosticEvent({
       type: "message.queued",
       sessionKey: agentSessionKey,
@@ -486,6 +487,45 @@ export async function runCronIsolatedAgentTurn(params: {
     }
     await persistSessionEntry();
   }
+
+  // Emit run.completed diagnostic event for MLflow trace attributes
+  const completion = payloads
+    .map((p) => p.text?.trim())
+    .filter(Boolean)
+    .join("\n");
+
+  const usage = runResult.meta.agentMeta?.usage;
+  const modelUsed = runResult.meta.agentMeta?.model ?? fallbackModel ?? model;
+  const providerUsed = runResult.meta.agentMeta?.provider ?? fallbackProvider ?? provider;
+  const contextTokens =
+    agentCfg?.contextTokens ?? lookupContextTokens(modelUsed) ?? DEFAULT_CONTEXT_TOKENS;
+
+  emitDiagnosticEvent({
+    type: "run.completed",
+    runId: cronSession.sessionEntry.sessionId,
+    sessionKey: agentSessionKey,
+    sessionId: cronSession.sessionEntry.sessionId,
+    channel: messageChannel,
+    provider: providerUsed,
+    model: modelUsed,
+    prompt: commandBody,
+    completion,
+    usage: {
+      input: usage?.input ?? 0,
+      output: usage?.output ?? 0,
+      cacheRead: usage?.cacheRead ?? 0,
+      cacheWrite: usage?.cacheWrite ?? 0,
+      promptTokens: (usage?.input ?? 0) + (usage?.cacheRead ?? 0) + (usage?.cacheWrite ?? 0),
+      total: usage?.total ?? 0,
+    },
+    context: {
+      limit: contextTokens,
+      used: usage?.total ?? 0,
+    },
+    durationMs: Date.now() - runStartedAt,
+    operationName: "chat",
+  });
+
   const firstText = payloads[0]?.text ?? "";
   const summary = pickSummaryFromPayloads(payloads) ?? pickSummaryFromOutput(firstText);
   const outputText = pickLastNonEmptyTextFromPayloads(payloads);

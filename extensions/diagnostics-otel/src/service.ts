@@ -1,15 +1,7 @@
 import type { SeverityNumber } from "@opentelemetry/api-logs";
 import type { ExportResult } from "@opentelemetry/core";
 import type { DiagnosticEventPayload, OpenClawPluginService } from "openclaw/plugin-sdk";
-import {
-  context,
-  metrics,
-  trace,
-  SpanKind,
-  SpanStatusCode,
-  type Context,
-  type Span,
-} from "@opentelemetry/api";
+import { context, metrics, trace, SpanKind, SpanStatusCode, type Span } from "@opentelemetry/api";
 import { ExportResultCode, hrTimeToMilliseconds } from "@opentelemetry/core";
 import { OTLPLogExporter } from "@opentelemetry/exporter-logs-otlp-http";
 import { OTLPMetricExporter } from "@opentelemetry/exporter-metrics-otlp-http";
@@ -297,11 +289,17 @@ export function createDiagnosticsOtelService(): OpenClawPluginService {
       };
 
       // Global trace context registry for W3C Trace Context propagation
-      const TRACE_CONTEXT_REGISTRY_KEY = Symbol.for("openclaw.diagnostics-otel.trace-contexts");
+      // Stores pre-formatted headers to avoid requiring @opentelemetry/api in main package
+      const TRACE_CONTEXT_REGISTRY_KEY = Symbol.for("openclaw.diagnostics-otel.trace-headers");
 
-      function getTraceContextRegistry(): Map<string, Context> {
+      type TraceHeaders = {
+        traceparent: string;
+        tracestate?: string;
+      };
+
+      function getTraceHeadersRegistry(): Map<string, TraceHeaders> {
         const globalStore = globalThis as {
-          [TRACE_CONTEXT_REGISTRY_KEY]?: Map<string, Context>;
+          [TRACE_CONTEXT_REGISTRY_KEY]?: Map<string, TraceHeaders>;
         };
         if (!globalStore[TRACE_CONTEXT_REGISTRY_KEY]) {
           globalStore[TRACE_CONTEXT_REGISTRY_KEY] = new Map();
@@ -641,10 +639,19 @@ export function createDiagnosticsOtelService(): OpenClawPluginService {
         );
         runSpans.set(runId, { span, createdAt: Date.now() });
 
-        // Store trace context for W3C propagation to downstream LLM providers
+        // Store W3C trace headers for propagation to downstream LLM providers
         if (params.sessionKey) {
-          const traceContext = trace.setSpan(context.active(), span);
-          getTraceContextRegistry().set(params.sessionKey, traceContext);
+          const spanContext = span.spanContext();
+          if (spanContext.traceId && spanContext.spanId) {
+            const traceparent = `00-${spanContext.traceId}-${spanContext.spanId}-${spanContext.traceFlags
+              .toString(16)
+              .padStart(2, "0")}`;
+            const traceHeaders: TraceHeaders = {
+              traceparent,
+              ...(spanContext.traceState && { tracestate: spanContext.traceState.serialize() }),
+            };
+            getTraceHeadersRegistry().set(params.sessionKey, traceHeaders);
+          }
         }
 
         if (debugExports) {
@@ -853,9 +860,9 @@ export function createDiagnosticsOtelService(): OpenClawPluginService {
         finalRunSpan.end();
         runSpans.delete(evt.runId);
 
-        // Clean up trace context from registry
+        // Clean up trace headers from registry
         if (evt.sessionKey) {
-          getTraceContextRegistry().delete(evt.sessionKey);
+          getTraceHeadersRegistry().delete(evt.sessionKey);
         }
       };
 
@@ -1357,8 +1364,8 @@ export function createDiagnosticsOtelService(): OpenClawPluginService {
         await logProvider.shutdown().catch(() => undefined);
         logProvider = null;
       }
-      // Clean up trace context registry
-      getTraceContextRegistry().clear();
+      // Clean up trace headers registry
+      getTraceHeadersRegistry().clear();
       if (sdk) {
         await sdk.shutdown().catch(() => undefined);
         sdk = null;
