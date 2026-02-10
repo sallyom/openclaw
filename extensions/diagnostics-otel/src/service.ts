@@ -307,16 +307,19 @@ export function createDiagnosticsOtelService(): OpenClawPluginService {
       const meter = metrics.getMeter("openclaw");
       const tracer = trace.getTracer("openclaw");
 
-      // MLflow-specific attribute constants for UI compatibility
-      const MLFLOW_ATTRS = {
+      // Trace attribute constants for observability platforms
+      const TRACE_ATTRS = {
+        // GenAI semantic conventions (OpenTelemetry standard)
         PROMPT: "gen_ai.prompt",
         COMPLETION: "gen_ai.completion",
+        SESSION_ID: "session.id", // OTEL semconv for session identification
+        USER_ID: "enduser.id", // OTEL semconv for user identification
+
+        // MLflow vendor-specific attributes (required for MLflow UI compatibility)
         MLFLOW_SPAN_INPUTS: "mlflow.spanInputs",
         MLFLOW_SPAN_OUTPUTS: "mlflow.spanOutputs",
         MLFLOW_TRACE_SESSION: "mlflow.trace.session",
         MLFLOW_TRACE_USER: "mlflow.trace.user",
-        SESSION_ID: "session.id", // OTEL semconv for session identification
-        USER_ID: "enduser.id", // OTEL semconv for user identification
       };
 
       // Global trace context registry for W3C Trace Context propagation
@@ -651,10 +654,10 @@ export function createDiagnosticsOtelService(): OpenClawPluginService {
         if (params.sessionKey) {
           spanAttrs["openclaw.sessionKey"] = params.sessionKey;
           spanAttrs["gen_ai.conversation.id"] = params.sessionKey;
-          spanAttrs[MLFLOW_ATTRS.SESSION_ID] = params.sessionKey;
-          spanAttrs[MLFLOW_ATTRS.MLFLOW_TRACE_SESSION] = params.sessionKey;
+          spanAttrs[TRACE_ATTRS.SESSION_ID] = params.sessionKey;
+          spanAttrs[TRACE_ATTRS.MLFLOW_TRACE_SESSION] = params.sessionKey;
           const agentId = params.sessionKey.split(":")[1] || "unknown";
-          spanAttrs[MLFLOW_ATTRS.USER_ID] = agentId;
+          spanAttrs[TRACE_ATTRS.USER_ID] = agentId;
         }
         if (params.sessionId) {
           spanAttrs["openclaw.sessionId"] = params.sessionId;
@@ -810,16 +813,16 @@ export function createDiagnosticsOtelService(): OpenClawPluginService {
             // CRITICAL: MLflow UI populates Request/Response columns from ROOT SPAN attributes
             // Set prompt/completion on root span - prefer simple text format for MLflow compatibility
             if (evt.prompt) {
-              activeTrace.span.setAttribute(MLFLOW_ATTRS.PROMPT, evt.prompt);
+              activeTrace.span.setAttribute(TRACE_ATTRS.PROMPT, evt.prompt);
               activeTrace.span.setAttribute(
-                MLFLOW_ATTRS.MLFLOW_SPAN_INPUTS,
+                TRACE_ATTRS.MLFLOW_SPAN_INPUTS,
                 JSON.stringify({ role: "user", content: evt.prompt }),
               );
             }
             if (evt.completion) {
-              activeTrace.span.setAttribute(MLFLOW_ATTRS.COMPLETION, evt.completion);
+              activeTrace.span.setAttribute(TRACE_ATTRS.COMPLETION, evt.completion);
               activeTrace.span.setAttribute(
-                MLFLOW_ATTRS.MLFLOW_SPAN_OUTPUTS,
+                TRACE_ATTRS.MLFLOW_SPAN_OUTPUTS,
                 JSON.stringify({ role: "assistant", content: evt.completion }),
               );
             }
@@ -1003,21 +1006,21 @@ export function createDiagnosticsOtelService(): OpenClawPluginService {
 
           // MLflow UI populates Request/Response columns from ROOT SPAN attributes
           if (evt.prompt) {
-            finalRunSpan.setAttribute(MLFLOW_ATTRS.PROMPT, evt.prompt);
+            finalRunSpan.setAttribute(TRACE_ATTRS.PROMPT, evt.prompt);
             finalRunSpan.setAttribute(
-              MLFLOW_ATTRS.MLFLOW_SPAN_INPUTS,
+              TRACE_ATTRS.MLFLOW_SPAN_INPUTS,
               JSON.stringify({ role: "user", content: evt.prompt }),
             );
           }
           if (evt.completion) {
-            finalRunSpan.setAttribute(MLFLOW_ATTRS.COMPLETION, evt.completion);
+            finalRunSpan.setAttribute(TRACE_ATTRS.COMPLETION, evt.completion);
             finalRunSpan.setAttribute(
-              MLFLOW_ATTRS.MLFLOW_SPAN_OUTPUTS,
+              TRACE_ATTRS.MLFLOW_SPAN_OUTPUTS,
               JSON.stringify({ role: "assistant", content: evt.completion }),
             );
           }
           if (evt.sessionKey) {
-            finalRunSpan.setAttribute(MLFLOW_ATTRS.MLFLOW_TRACE_SESSION, evt.sessionKey);
+            finalRunSpan.setAttribute(TRACE_ATTRS.MLFLOW_TRACE_SESSION, evt.sessionKey);
           }
 
           finalRunSpan.end();
@@ -1077,11 +1080,11 @@ export function createDiagnosticsOtelService(): OpenClawPluginService {
         if (evt.sessionKey) {
           spanAttrs["openclaw.sessionKey"] = evt.sessionKey;
           spanAttrs["gen_ai.conversation.id"] = evt.sessionKey;
-          spanAttrs[MLFLOW_ATTRS.SESSION_ID] = evt.sessionKey;
-          spanAttrs[MLFLOW_ATTRS.MLFLOW_TRACE_SESSION] = evt.sessionKey;
+          spanAttrs[TRACE_ATTRS.SESSION_ID] = evt.sessionKey;
+          spanAttrs[TRACE_ATTRS.MLFLOW_TRACE_SESSION] = evt.sessionKey;
           const agentId = evt.sessionKey.split(":")[1] || "unknown";
-          spanAttrs[MLFLOW_ATTRS.USER_ID] = agentId;
-          spanAttrs[MLFLOW_ATTRS.MLFLOW_TRACE_USER] = agentId;
+          spanAttrs[TRACE_ATTRS.USER_ID] = agentId;
+          spanAttrs[TRACE_ATTRS.MLFLOW_TRACE_USER] = agentId;
         }
         if (evt.sessionId) {
           spanAttrs["openclaw.sessionId"] = evt.sessionId;
@@ -1213,11 +1216,11 @@ export function createDiagnosticsOtelService(): OpenClawPluginService {
         }
         if (evt.sessionKey) {
           spanAttrs["gen_ai.conversation.id"] = evt.sessionKey;
-          spanAttrs[MLFLOW_ATTRS.SESSION_ID] = evt.sessionKey;
-          spanAttrs[MLFLOW_ATTRS.MLFLOW_TRACE_SESSION] = evt.sessionKey;
+          spanAttrs[TRACE_ATTRS.SESSION_ID] = evt.sessionKey;
+          spanAttrs[TRACE_ATTRS.MLFLOW_TRACE_SESSION] = evt.sessionKey;
           const agentId = evt.sessionKey.split(":")[1] || "unknown";
-          spanAttrs[MLFLOW_ATTRS.USER_ID] = agentId;
-          spanAttrs[MLFLOW_ATTRS.MLFLOW_TRACE_USER] = agentId;
+          spanAttrs[TRACE_ATTRS.USER_ID] = agentId;
+          spanAttrs[TRACE_ATTRS.MLFLOW_TRACE_USER] = agentId;
         }
         if (typeof evt.temperature === "number") {
           spanAttrs["gen_ai.request.temperature"] = evt.temperature;
@@ -1372,12 +1375,12 @@ export function createDiagnosticsOtelService(): OpenClawPluginService {
                 "openclaw.agentId": agentId,
 
                 // OTEL semantic conventions for session/user identification
-                [MLFLOW_ATTRS.SESSION_ID]: evt.sessionKey,
-                [MLFLOW_ATTRS.USER_ID]: agentId,
+                [TRACE_ATTRS.SESSION_ID]: evt.sessionKey,
+                [TRACE_ATTRS.USER_ID]: agentId,
 
                 // CRITICAL: MLflow UI reads these for Session/User columns
-                [MLFLOW_ATTRS.MLFLOW_TRACE_SESSION]: evt.sessionKey,
-                [MLFLOW_ATTRS.MLFLOW_TRACE_USER]: agentId,
+                [TRACE_ATTRS.MLFLOW_TRACE_SESSION]: evt.sessionKey,
+                [TRACE_ATTRS.MLFLOW_TRACE_USER]: agentId,
               },
             });
 
