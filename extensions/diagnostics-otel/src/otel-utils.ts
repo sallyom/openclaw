@@ -146,7 +146,9 @@ export class LoggingTraceExporter implements SpanExporter {
 
 export interface ActiveTrace {
   span: Span;
+  context: ReturnType<typeof import("@opentelemetry/api").context.active>;
   startedAt: number;
   sessionKey?: string;
   channel?: string;
+  agentId?: string;
 }

@@ -49,6 +49,17 @@ export interface OtelHandlerCtx {
     startTimeMs?: number;
     attributes?: Record<string, string | number | string[]>;
   }) => Span | null;
+  TRACE_ATTRS: {
+    PROMPT: string;
+    COMPLETION: string;
+    SESSION_ID: string;
+    USER_ID: string;
+    MLFLOW_SPAN_INPUTS: string;
+    MLFLOW_SPAN_OUTPUTS: string;
+    MLFLOW_TRACE_SESSION: string;
+    MLFLOW_TRACE_USER: string;
+  };
+  getTraceHeadersRegistry: () => Map<string, { traceparent: string; tracestate?: string }>;
 }
 
 export function recordRunCompleted(
@@ -107,6 +118,32 @@ export function recordRunCompleted(
     return;
   }
 
+  // Check for active trace (root message span created by message.queued)
+  const activeTrace = evt.sessionKey ? hctx.activeTraces.get(evt.sessionKey) : null;
+  if (activeTrace) {
+    // CRITICAL: MLflow UI populates Request/Response columns from ROOT SPAN attributes
+    // Set prompt/completion on root span for MLflow compatibility
+    if (evt.prompt) {
+      activeTrace.span.setAttribute(hctx.TRACE_ATTRS.PROMPT, evt.prompt);
+      activeTrace.span.setAttribute(
+        hctx.TRACE_ATTRS.MLFLOW_SPAN_INPUTS,
+        JSON.stringify({ role: "user", content: evt.prompt }),
+      );
+    }
+    if (evt.completion) {
+      activeTrace.span.setAttribute(hctx.TRACE_ATTRS.COMPLETION, evt.completion);
+      activeTrace.span.setAttribute(
+        hctx.TRACE_ATTRS.MLFLOW_SPAN_OUTPUTS,
+        JSON.stringify({ role: "assistant", content: evt.completion }),
+      );
+    }
+    if (evt.sessionKey) {
+      activeTrace.span.setAttribute(hctx.TRACE_ATTRS.MLFLOW_TRACE_SESSION, evt.sessionKey);
+      const agentId = evt.sessionKey.split(":")[1] || "unknown";
+      activeTrace.span.setAttribute(hctx.TRACE_ATTRS.MLFLOW_TRACE_USER, agentId);
+    }
+  }
+
   // Only put lightweight envelope attributes on the agent.turn span.
   // gen_ai.* inference attributes (model, messages, tokens, etc.) belong
   // exclusively on the child chat spans created by recordModelInference.
@@ -162,6 +199,32 @@ export function recordRunCompleted(
   const finalRunSpan =
     runSpan ??
     hctx.spanWithDuration(fallbackSpanName, turnAttrs, evt.durationMs, SpanKind.INTERNAL);
+
+  // If there's no activeTrace (no parent openclaw.message span), this invoke_agent span is the root.
+  // Set MLflow attributes on it so Request/Response/Session columns populate in MLflow UI.
+  if (!activeTrace) {
+    if (evt.prompt) {
+      finalRunSpan.setAttribute(hctx.TRACE_ATTRS.PROMPT, evt.prompt);
+      finalRunSpan.setAttribute(
+        hctx.TRACE_ATTRS.MLFLOW_SPAN_INPUTS,
+        JSON.stringify({ role: "user", content: evt.prompt }),
+      );
+    }
+    if (evt.completion) {
+      finalRunSpan.setAttribute(hctx.TRACE_ATTRS.COMPLETION, evt.completion);
+      finalRunSpan.setAttribute(
+        hctx.TRACE_ATTRS.MLFLOW_SPAN_OUTPUTS,
+        JSON.stringify({ role: "assistant", content: evt.completion }),
+      );
+    }
+    if (evt.sessionKey) {
+      finalRunSpan.setAttribute(hctx.TRACE_ATTRS.MLFLOW_TRACE_SESSION, evt.sessionKey);
+      const agentId = evt.sessionKey.split(":")[1] || "unknown";
+      finalRunSpan.setAttribute(hctx.TRACE_ATTRS.MLFLOW_TRACE_USER, agentId);
+      finalRunSpan.setAttribute(hctx.TRACE_ATTRS.SESSION_ID, evt.sessionKey);
+      finalRunSpan.setAttribute(hctx.TRACE_ATTRS.USER_ID, agentId);
+    }
+  }
 
   if (evt.error) {
     finalRunSpan.setStatus({ code: SpanStatusCode.ERROR, message: evt.error });
@@ -503,6 +566,8 @@ export function recordMessageQueued(
   // This root span covers the entire lifecycle; agent.turn, LLM calls, and tool executions are nested as children.
   // message.processed ends this span (it does not create a new child).
   if (hctx.tracesEnabled && evt.sessionKey) {
+    const agentId = evt.sessionKey.split(":")[1] || "unknown";
+
     const rootSpan = hctx.tracer.startSpan("openclaw.message", {
       kind: SpanKind.SERVER,
       attributes: {
@@ -510,15 +575,37 @@ export function recordMessageQueued(
         "openclaw.channel": evt.channel ?? "unknown",
         "openclaw.source": evt.source ?? "unknown",
         ...(typeof evt.queueDepth === "number" ? { "openclaw.queueDepth": evt.queueDepth } : {}),
+        // OTEL semantic conventions for session/user identification
+        [hctx.TRACE_ATTRS.SESSION_ID]: evt.sessionKey,
+        [hctx.TRACE_ATTRS.USER_ID]: agentId,
+        // CRITICAL: MLflow UI reads these for Session/User columns
+        [hctx.TRACE_ATTRS.MLFLOW_TRACE_SESSION]: evt.sessionKey,
+        [hctx.TRACE_ATTRS.MLFLOW_TRACE_USER]: agentId,
       },
     });
 
+    const traceContext = trace.setSpan(context.active(), rootSpan);
+
     hctx.activeTraces.set(evt.sessionKey, {
       span: rootSpan,
+      context: traceContext,
       startedAt: Date.now(),
       sessionKey: evt.sessionKey,
       channel: evt.channel,
+      agentId,
     });
+
+    // Store W3C trace headers for propagation
+    const spanContext = rootSpan.spanContext();
+    if (spanContext.traceId && spanContext.spanId) {
+      const traceparent = `00-${spanContext.traceId}-${spanContext.spanId}-${spanContext.traceFlags
+        .toString(16)
+        .padStart(2, "0")}`;
+      hctx.getTraceHeadersRegistry().set(evt.sessionKey, {
+        traceparent,
+        ...(spanContext.traceState && { tracestate: spanContext.traceState.serialize() }),
+      });
+    }
 
     if (hctx.debugExports) {
       hctx.logger.info(`diagnostics-otel: created root span for session=${evt.sessionKey}`);
@@ -561,6 +648,7 @@ export function recordMessageProcessed(
     }
     activeTrace.span.end();
     hctx.activeTraces.delete(sessionKey!);
+    hctx.getTraceHeadersRegistry().delete(sessionKey!);
     if (hctx.debugExports) {
       hctx.logger.info(`diagnostics-otel: ended root span for session=${sessionKey}`);
     }
@@ -646,12 +734,28 @@ export function recordToolExecution(
   if (!hctx.tracesEnabled) {
     return;
   }
+
+  // Nest tool span under root message.process span (via activeTraces)
+  // or fallback to run/inference spans if activeTrace not found
+  const activeTrace = evt.sessionKey ? hctx.activeTraces.get(evt.sessionKey) : null;
+  if (activeTrace) {
+    hctx.createToolSpan(evt, activeTrace.context);
+    return;
+  }
+
+  // Fallback: try run/inference spans
   const runId = evt.runId;
   const inferenceSpan = runId ? hctx.activeInferenceSpanByRunId.get(runId) : undefined;
   const runEntry = runId ? hctx.runSpans.get(runId) : undefined;
   const parentSpan = inferenceSpan ?? runEntry?.span;
   const parentCtx = parentSpan ? trace.setSpan(context.active(), parentSpan) : undefined;
   hctx.createToolSpan(evt, parentCtx);
+
+  if (hctx.debugExports && !activeTrace && !parentCtx) {
+    hctx.logger.info(
+      `diagnostics-otel: no active trace for tool.execution sessionKey=${evt.sessionKey} tool=${evt.toolName}`,
+    );
+  }
 }
 
 export function recordHeartbeat(
