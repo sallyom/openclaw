@@ -471,8 +471,9 @@ export function handleMessageEnd(
   emitDiagnosticEvent({
     type: "model.inference",
     runId: ctx.params.runId,
-    sessionId: (ctx.params.session as { id?: string }).id,
-    sessionKey: runContext?.sessionKey,
+    sessionKey: ctx.params.sessionKey,
+    sessionId: ctx.params.sessionId ?? (ctx.params.session as { id?: string }).id,
+    channel: ctx.params.channel,
     usage: {
       input: usage?.input,
       output: usage?.output,
