@@ -1,5 +1,9 @@
 import type { SeverityNumber } from "@opentelemetry/api-logs";
-import type { DiagnosticEventPayload, OpenClawPluginService } from "openclaw/plugin-sdk";
+import type {
+  DiagnosticEventPayload,
+  OpenClawConfig,
+  OpenClawPluginService,
+} from "openclaw/plugin-sdk";
 import { context, metrics, trace, SpanKind, SpanStatusCode, type Span } from "@opentelemetry/api";
 import { OTLPLogExporter } from "@opentelemetry/exporter-logs-otlp-http";
 import { OTLPMetricExporter } from "@opentelemetry/exporter-metrics-otlp-http";
@@ -10,6 +14,7 @@ import { PeriodicExportingMetricReader } from "@opentelemetry/sdk-metrics";
 import { NodeSDK } from "@opentelemetry/sdk-node";
 import { ParentBasedSampler, TraceIdRatioBasedSampler } from "@opentelemetry/sdk-trace-base";
 import { SemanticResourceAttributes } from "@opentelemetry/semantic-conventions";
+import { resolveAgentIdFromSessionKey, resolveAgentIdentity } from "openclaw/plugin-sdk";
 import { onDiagnosticEvent, registerLogTransport } from "openclaw/plugin-sdk";
 import {
   recordRunCompleted,
@@ -28,6 +33,7 @@ import {
   recordRunAttempt,
   recordToolExecution,
   recordHeartbeat,
+  type AgentInfo,
   type OtelHandlerCtx,
 } from "./otel-event-handlers.js";
 import { createMetricInstruments } from "./otel-metrics.js";
@@ -315,6 +321,7 @@ export function createDiagnosticsOtelService(): OpenClawPluginService {
       const inferenceSpans = new Map<string, { span: Span; createdAt: number }>();
       const INFERENCE_SPAN_TTL_MS = 10 * 60 * 1000;
       const activeInferenceSpanByRunId = new Map<string, Span>();
+      const runProviderByRunId = new Map<string, string>();
 
       const createToolSpan = (
         evt: Extract<DiagnosticEventPayload, { type: "tool.execution" }>,
@@ -325,6 +332,12 @@ export function createDiagnosticsOtelService(): OpenClawPluginService {
           "gen_ai.tool.name": evt.toolName,
           "gen_ai.tool.type": evt.toolType ?? "function",
         };
+        if (evt.runId) {
+          const provider = runProviderByRunId.get(evt.runId);
+          if (provider) {
+            spanAttrs["gen_ai.provider.name"] = provider;
+          }
+        }
         if (evt.toolCallId) {
           spanAttrs["gen_ai.tool.call.id"] = evt.toolCallId;
         }
@@ -355,6 +368,22 @@ export function createDiagnosticsOtelService(): OpenClawPluginService {
           ctx.logger.info(`diagnostics-otel: span created ${spanName}`);
         }
         span.end();
+      };
+
+      const agentInfoCache = new Map<string, AgentInfo | null>();
+      const resolveAgentInfo = (sessionKey?: string): AgentInfo | null => {
+        if (!sessionKey) {
+          return null;
+        }
+        const cached = agentInfoCache.get(sessionKey);
+        if (cached !== undefined) {
+          return cached;
+        }
+        const agentId = resolveAgentIdFromSessionKey(sessionKey);
+        const identity = resolveAgentIdentity(ctx.config, agentId);
+        const info: AgentInfo = { id: agentId, name: identity?.name?.trim() || undefined };
+        agentInfoCache.set(sessionKey, info);
+        return info;
       };
 
       const ensureRunSpan = (params: {
@@ -394,14 +423,25 @@ export function createDiagnosticsOtelService(): OpenClawPluginService {
           spanAttrs["openclaw.channel"] = params.channel;
         }
 
+        // GenAI agent identity attributes (gen_ai.agent.*)
+        const agentInfo = resolveAgentInfo(params.sessionKey);
+        if (agentInfo) {
+          spanAttrs["gen_ai.agent.id"] = agentInfo.id;
+          if (agentInfo.name) {
+            spanAttrs["gen_ai.agent.name"] = agentInfo.name;
+          }
+        }
+        spanAttrs["gen_ai.operation.name"] = "invoke_agent";
+
         // Parent under root trace span if available (created by message.queued)
         const rootTrace = params.sessionKey ? activeTraces.get(params.sessionKey) : undefined;
         const parentCtx = rootTrace
           ? trace.setSpan(context.active(), rootTrace.span)
           : context.active();
 
+        const spanName = agentInfo?.name ? `invoke_agent ${agentInfo.name}` : "invoke_agent";
         const span = tracer.startSpan(
-          "openclaw.agent.turn",
+          spanName,
           {
             attributes: spanAttrs,
             ...(typeof params.startTimeMs === "number" ? { startTime: params.startTimeMs } : {}),
@@ -411,7 +451,7 @@ export function createDiagnosticsOtelService(): OpenClawPluginService {
         );
         runSpans.set(runId, { span, createdAt: Date.now() });
         if (debugExports) {
-          ctx.logger.info(`diagnostics-otel: span created openclaw.agent.turn`);
+          ctx.logger.info(`diagnostics-otel: span created ${spanName}`);
         }
         return span;
       };
@@ -428,6 +468,8 @@ export function createDiagnosticsOtelService(): OpenClawPluginService {
         runSpans,
         inferenceSpans,
         activeInferenceSpanByRunId,
+        runProviderByRunId,
+        resolveAgentInfo,
         spanWithDuration,
         safeJsonStringify,
         createToolSpan,
@@ -461,6 +503,12 @@ export function createDiagnosticsOtelService(): OpenClawPluginService {
         for (const [runId, span] of activeInferenceSpanByRunId) {
           if (Array.from(inferenceSpans.values()).every((e) => e.span !== span)) {
             activeInferenceSpanByRunId.delete(runId);
+          }
+        }
+        // Clean up stale provider entries for completed/expired runs
+        for (const runId of runProviderByRunId.keys()) {
+          if (!runSpans.has(runId)) {
+            runProviderByRunId.delete(runId);
           }
         }
         for (const [key, entry] of activeTraces) {

@@ -11,6 +11,11 @@ import type { OtelMetricInstruments } from "./otel-metrics.js";
 import type { ActiveTrace } from "./otel-utils.js";
 import { mapProviderName } from "./otel-utils.js";
 
+export type AgentInfo = {
+  id: string;
+  name?: string;
+};
+
 export interface OtelHandlerCtx {
   tracer: Tracer;
   metrics: OtelMetricInstruments;
@@ -22,6 +27,8 @@ export interface OtelHandlerCtx {
   runSpans: Map<string, { span: Span; createdAt: number }>;
   inferenceSpans: Map<string, { span: Span; createdAt: number }>;
   activeInferenceSpanByRunId: Map<string, Span>;
+  runProviderByRunId: Map<string, string>;
+  resolveAgentInfo: (sessionKey?: string) => AgentInfo | null;
   spanWithDuration: (
     name: string,
     attributes: Record<string, string | number | string[]>,
@@ -108,6 +115,7 @@ export function recordRunCompleted(
     "openclaw.runId": evt.runId,
     "openclaw.sessionKey": evt.sessionKey ?? "",
     "openclaw.sessionId": evt.sessionId ?? "",
+    "gen_ai.provider.name": mapProviderName(evt.provider),
   };
   if (typeof usage.input === "number") {
     turnAttrs["openclaw.tokens.input"] = usage.input;
@@ -136,20 +144,36 @@ export function recordRunCompleted(
     startTimeMs:
       typeof evt.durationMs === "number" ? Date.now() - Math.max(0, evt.durationMs) : undefined,
   });
+  if (!runSpan) {
+    // Fallback: add agent identity attrs for the standalone span
+    const agentInfo = hctx.resolveAgentInfo(evt.sessionKey);
+    if (agentInfo) {
+      turnAttrs["gen_ai.agent.id"] = agentInfo.id;
+      if (agentInfo.name) {
+        turnAttrs["gen_ai.agent.name"] = agentInfo.name;
+      }
+    }
+    turnAttrs["gen_ai.operation.name"] = "invoke_agent";
+  }
+  const fallbackSpanName = (() => {
+    const agentInfo = hctx.resolveAgentInfo(evt.sessionKey);
+    return agentInfo?.name ? `invoke_agent ${agentInfo.name}` : "invoke_agent";
+  })();
   const finalRunSpan =
     runSpan ??
-    hctx.spanWithDuration("openclaw.agent.turn", turnAttrs, evt.durationMs, SpanKind.INTERNAL);
+    hctx.spanWithDuration(fallbackSpanName, turnAttrs, evt.durationMs, SpanKind.INTERNAL);
 
   if (evt.error) {
     finalRunSpan.setStatus({ code: SpanStatusCode.ERROR, message: evt.error });
     if (evt.errorType) {
-      finalRunSpan.setAttribute("gen_ai.error.type", evt.errorType);
+      finalRunSpan.setAttribute("error.type", evt.errorType);
     }
     finalRunSpan.setAttribute("openclaw.error", evt.error);
   }
 
   finalRunSpan.end();
   hctx.runSpans.delete(evt.runId);
+  hctx.runProviderByRunId.delete(evt.runId);
 }
 
 export function recordRunStarted(
@@ -215,7 +239,7 @@ export function recordModelInferenceStarted(
       spanAttrs["gen_ai.system_instructions"] = JSON.stringify(evt.systemInstructions);
     }
     if (evt.toolDefinitions) {
-      spanAttrs["gen_ai.request.tools"] = JSON.stringify(evt.toolDefinitions);
+      spanAttrs["gen_ai.tool.definitions"] = JSON.stringify(evt.toolDefinitions);
     }
   }
 
@@ -234,6 +258,9 @@ export function recordModelInferenceStarted(
   }
   if (evt.runId) {
     hctx.activeInferenceSpanByRunId.set(evt.runId, span);
+    if (evt.provider) {
+      hctx.runProviderByRunId.set(evt.runId, mapProviderName(evt.provider));
+    }
   }
 }
 
@@ -245,11 +272,14 @@ export function recordModelInference(
   const usage = evt.usage ?? {};
 
   // GenAI standard metrics (gen_ai_latest_experimental)
-  const genAiMetricAttrs = {
+  const genAiMetricAttrs: Record<string, string> = {
     "gen_ai.operation.name": opName,
     "gen_ai.provider.name": mapProviderName(evt.provider),
     "gen_ai.request.model": evt.model ?? "unknown",
   };
+  if (evt.responseModel) {
+    genAiMetricAttrs["gen_ai.response.model"] = evt.responseModel;
+  }
   if (evt.durationMs) {
     hctx.metrics.genAiOperationDuration.record(evt.durationMs / 1000, genAiMetricAttrs);
   }
@@ -271,7 +301,7 @@ export function recordModelInference(
   if (evt.error && evt.errorType) {
     hctx.metrics.inferenceErrorCounter.add(1, {
       ...genAiMetricAttrs,
-      "openclaw.error.type": evt.errorType,
+      "error.type": evt.errorType,
     });
   }
 
@@ -376,7 +406,7 @@ export function recordModelInference(
   if (evt.error) {
     finalSpan.setStatus({ code: SpanStatusCode.ERROR, message: evt.error });
     if (evt.errorType) {
-      finalSpan.setAttribute("gen_ai.error.type", evt.errorType);
+      finalSpan.setAttribute("error.type", evt.errorType);
     }
     finalSpan.setAttribute("openclaw.error", evt.error);
   }

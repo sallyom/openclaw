@@ -205,19 +205,24 @@ describe("diagnostics-otel service – span hierarchy", () => {
     });
 
     const spanCall = telemetryState.tracer.startSpan.mock.calls[0];
-    expect(spanCall[0]).toBe("openclaw.agent.turn");
+    expect(spanCall[0]).toBe("invoke_agent");
 
     const attrs = spanCall[1]?.attributes;
     // gen_ai.* inference attributes should NOT be on the turn span —
     // they belong on child chat spans only.
-    expect(attrs["gen_ai.operation.name"]).toBeUndefined();
-    expect(attrs["gen_ai.provider.name"]).toBeUndefined();
+    // gen_ai.operation.name IS set on the turn span (as "invoke_agent" per agent spec).
+    expect(attrs["gen_ai.operation.name"]).toBe("invoke_agent");
+    expect(attrs["gen_ai.provider.name"]).toBe("openai");
     expect(attrs["gen_ai.request.model"]).toBeUndefined();
     expect(attrs["gen_ai.response.id"]).toBeUndefined();
     expect(attrs["gen_ai.response.model"]).toBeUndefined();
     expect(attrs["gen_ai.response.finish_reasons"]).toBeUndefined();
     // conversation.id is kept as it's a session-level attribute
     expect(attrs["gen_ai.conversation.id"]).toBe("sess-001");
+
+    // gen_ai.agent.* identity attributes
+    expect(attrs["gen_ai.agent.id"]).toBe("main");
+    expect(attrs["gen_ai.agent.name"]).toBeUndefined(); // no identity configured
 
     // openclaw.* envelope attributes preserved
     expect(attrs["openclaw.channel"]).toBe("webchat");
@@ -255,7 +260,7 @@ describe("diagnostics-otel service – span hierarchy", () => {
     });
 
     const calls = telemetryState.tracer.startSpan.mock.calls;
-    expect(calls[0]?.[0]).toBe("openclaw.agent.turn");
+    expect(calls[0]?.[0]).toBe("invoke_agent");
     expect(calls[1]?.[0]).toBe("chat gpt-5.2");
     expect(calls[1]?.[2]).toEqual(expect.objectContaining({ _type: "with-parent" }));
 
@@ -319,7 +324,7 @@ describe("diagnostics-otel service – span hierarchy", () => {
     expect(calls).toHaveLength(3);
 
     // First call is the run span
-    expect(calls[0][0]).toBe("openclaw.agent.turn");
+    expect(calls[0][0]).toBe("invoke_agent");
     const parentSpan = telemetryState.tracer.startSpan.mock.results[0]?.value;
 
     // Tool spans should have been created with a parent context derived from the run span
@@ -457,9 +462,67 @@ describe("diagnostics-otel service – span hierarchy", () => {
 
     const calls = telemetryState.tracer.startSpan.mock.calls;
     expect(calls[0]?.[0]).toBe("openclaw.message");
-    expect(calls[1]?.[0]).toBe("openclaw.agent.turn");
+    expect(calls[1]?.[0]).toBe("invoke_agent");
     // agent.turn should have a parent context pointing to the root span
     expect(calls[1]?.[2]).toEqual(expect.objectContaining({ _type: "with-parent" }));
+
+    await service.stop?.();
+  });
+
+  test("agent span includes gen_ai.agent.name when identity is configured", async () => {
+    const service = createService();
+    await service.start({
+      ...createTestCtx(),
+      config: {
+        diagnostics: {
+          enabled: true,
+          otel: {
+            enabled: true,
+            endpoint: "http://otel-collector:4318",
+            protocol: "http/protobuf" as const,
+            traces: true,
+            metrics: true,
+          },
+        },
+        agents: {
+          list: [{ id: "main", workspace: "/tmp", identity: { name: "Samantha" } }],
+        },
+      },
+    });
+
+    emitDiagnosticEvent({
+      type: "run.started",
+      runId: "run-identity-1",
+      sessionKey: "agent:main:telegram:group:123",
+      sessionId: "sess-identity",
+      channel: "telegram",
+    });
+
+    const calls = telemetryState.tracer.startSpan.mock.calls;
+    expect(calls[0]?.[0]).toBe("invoke_agent Samantha");
+    const attrs = calls[0]?.[1]?.attributes;
+    expect(attrs["gen_ai.agent.id"]).toBe("main");
+    expect(attrs["gen_ai.agent.name"]).toBe("Samantha");
+    expect(attrs["gen_ai.operation.name"]).toBe("invoke_agent");
+
+    await service.stop?.();
+  });
+
+  test("agent span uses agentId from subagent sessionKey", async () => {
+    const service = createService();
+    await service.start(createTestCtx());
+
+    emitDiagnosticEvent({
+      type: "run.started",
+      runId: "run-sub-1",
+      sessionKey: "agent:helper:subagent:550e8400-e29b-41d4-a716-446655440000",
+      sessionId: "sess-sub",
+      channel: "telegram",
+    });
+
+    const attrs = telemetryState.tracer.startSpan.mock.calls[0]?.[1]?.attributes;
+    expect(attrs["gen_ai.agent.id"]).toBe("helper");
+    expect(attrs["gen_ai.operation.name"]).toBe("invoke_agent");
 
     await service.stop?.();
   });

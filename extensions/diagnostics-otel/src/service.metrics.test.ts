@@ -486,7 +486,7 @@ describe("diagnostics-otel service – metrics & inference", () => {
     await service.stop?.();
   });
 
-  test("error event creates span with ERROR status and gen_ai.error.type attribute", async () => {
+  test("error event creates span with ERROR status and error.type attribute", async () => {
     const service = createService();
     await service.start(createTestCtx());
 
@@ -518,7 +518,7 @@ describe("diagnostics-otel service – metrics & inference", () => {
     expect(errorCounter?.add).toHaveBeenCalledWith(
       1,
       expect.objectContaining({
-        "openclaw.error.type": "context_overflow",
+        "error.type": "context_overflow",
       }),
     );
 
