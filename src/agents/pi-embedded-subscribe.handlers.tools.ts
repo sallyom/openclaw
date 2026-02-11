@@ -1,6 +1,6 @@
 import type { AgentEvent } from "@mariozechner/pi-agent-core";
 import type { EmbeddedPiSubscribeContext } from "./pi-embedded-subscribe.handlers.types.js";
-import { emitAgentEvent } from "../infra/agent-events.js";
+import { emitAgentEvent, getAgentRunContext } from "../infra/agent-events.js";
 import { emitDiagnosticEvent } from "../infra/diagnostic-events.js";
 import { normalizeTextForComparison } from "./pi-embedded-helpers.js";
 import { isMessagingTool, isMessagingToolSendAction } from "./pi-embedded-messaging.js";
@@ -227,9 +227,11 @@ export function handleToolExecutionEnd(
   ctx.state.toolStartTimeById.delete(toolCallId);
   const toolInput = ctx.state.toolArgsById.get(toolCallId);
   ctx.state.toolArgsById.delete(toolCallId);
+  const runContext = getAgentRunContext(ctx.params.runId);
   emitDiagnosticEvent({
     type: "tool.execution",
     runId: ctx.params.runId,
+    sessionKey: runContext?.sessionKey,
     toolName,
     toolType: "function",
     toolCallId,

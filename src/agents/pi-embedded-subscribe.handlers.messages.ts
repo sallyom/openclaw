@@ -1,7 +1,7 @@
 import type { AgentEvent, AgentMessage } from "@mariozechner/pi-agent-core";
 import type { EmbeddedPiSubscribeContext } from "./pi-embedded-subscribe.handlers.types.js";
 import { parseReplyDirectives } from "../auto-reply/reply/reply-directives.js";
-import { emitAgentEvent } from "../infra/agent-events.js";
+import { emitAgentEvent, getAgentRunContext } from "../infra/agent-events.js";
 import {
   emitDiagnosticEvent,
   type GenAiMessage,
@@ -467,10 +467,12 @@ export function handleMessageEnd(
         ]
       : [];
 
+  const runContext = getAgentRunContext(ctx.params.runId);
   emitDiagnosticEvent({
     type: "model.inference",
     runId: ctx.params.runId,
     sessionId: (ctx.params.session as { id?: string }).id,
+    sessionKey: runContext?.sessionKey,
     usage: {
       input: usage?.input,
       output: usage?.output,
