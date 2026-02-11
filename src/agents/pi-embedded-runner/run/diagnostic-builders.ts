@@ -45,7 +45,6 @@ export function buildGenAiMessagesFromContext(messages: unknown): GenAiMessage[]
       continue;
     }
     if (role === "assistant") {
-      // Keep assistant parts to text only to avoid double-encoding tool calls here.
       const parts: GenAiPart[] = [];
       const content = record.content;
       if (Array.isArray(content)) {
@@ -56,6 +55,16 @@ export function buildGenAiMessagesFromContext(messages: unknown): GenAiMessage[]
           const b = block as Record<string, unknown>;
           if (b.type === "text" && typeof b.text === "string") {
             parts.push({ type: "text", content: b.text });
+          } else if (b.type === "toolCall" || b.type === "toolUse" || b.type === "functionCall") {
+            const id = typeof b.id === "string" ? b.id : "";
+            const name = typeof b.name === "string" ? b.name : "";
+            const args =
+              b.arguments && typeof b.arguments === "object"
+                ? (b.arguments as Record<string, unknown>)
+                : b.input && typeof b.input === "object"
+                  ? (b.input as Record<string, unknown>)
+                  : undefined;
+            parts.push({ type: "tool_call", id, name, arguments: args });
           }
         }
       }
