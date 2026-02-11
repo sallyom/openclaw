@@ -72,6 +72,8 @@ export type DiagnosticInferenceEvent = DiagnosticBaseEvent & {
   responseModel?: string;
   finishReasons?: string[];
   outputMessages?: GenAiMessage[];
+  temperature?: number;
+  maxOutputTokens?: number;
   ttftMs?: number;
   error?: string;
   errorType?: string;

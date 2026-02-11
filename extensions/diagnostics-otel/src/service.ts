@@ -1,8 +1,6 @@
 import type { SeverityNumber } from "@opentelemetry/api-logs";
-import type { ExportResult } from "@opentelemetry/core";
 import type { DiagnosticEventPayload, OpenClawPluginService } from "openclaw/plugin-sdk";
 import { context, metrics, trace, SpanKind, SpanStatusCode, type Span } from "@opentelemetry/api";
-import { ExportResultCode, hrTimeToMilliseconds } from "@opentelemetry/core";
 import { OTLPLogExporter } from "@opentelemetry/exporter-logs-otlp-http";
 import { OTLPMetricExporter } from "@opentelemetry/exporter-metrics-otlp-http";
 import { OTLPTraceExporter } from "@opentelemetry/exporter-trace-otlp-http";
@@ -10,162 +8,39 @@ import { resourceFromAttributes } from "@opentelemetry/resources";
 import { BatchLogRecordProcessor, LoggerProvider } from "@opentelemetry/sdk-logs";
 import { PeriodicExportingMetricReader } from "@opentelemetry/sdk-metrics";
 import { NodeSDK } from "@opentelemetry/sdk-node";
-import {
-  ParentBasedSampler,
-  TraceIdRatioBasedSampler,
-  type ReadableSpan,
-  type SpanExporter,
-} from "@opentelemetry/sdk-trace-base";
+import { ParentBasedSampler, TraceIdRatioBasedSampler } from "@opentelemetry/sdk-trace-base";
 import { SemanticResourceAttributes } from "@opentelemetry/semantic-conventions";
-import fs from "node:fs";
 import { onDiagnosticEvent, registerLogTransport } from "openclaw/plugin-sdk";
-
-const DEFAULT_SERVICE_NAME = "openclaw";
-const OTEL_DEBUG_ENV = "OPENCLAW_OTEL_DEBUG";
-const OTEL_DUMP_ENV = "OPENCLAW_OTEL_DUMP";
-
-function normalizeEndpoint(endpoint?: string): string | undefined {
-  const trimmed = endpoint?.trim();
-  return trimmed ? trimmed.replace(/\/+$/, "") : undefined;
-}
-
-function resolveOtelUrl(endpoint: string | undefined, path: string): string | undefined {
-  if (!endpoint) {
-    return undefined;
-  }
-  if (endpoint.includes("/v1/")) {
-    return endpoint;
-  }
-  return `${endpoint}/${path}`;
-}
-
-function resolveSampleRate(value: number | undefined): number | undefined {
-  if (typeof value !== "number" || !Number.isFinite(value)) {
-    return undefined;
-  }
-  if (value < 0 || value > 1) {
-    return undefined;
-  }
-  return value;
-}
-
-/** Map internal provider names to gen_ai.provider.name enum values. */
-function mapProviderName(provider?: string): string {
-  if (!provider) {
-    return "unknown";
-  }
-  const p = provider.toLowerCase();
-  if (p.includes("openai") || p === "orq") {
-    return "openai";
-  }
-  if (p.includes("anthropic") || p.includes("claude")) {
-    return "anthropic";
-  }
-  if (p.includes("google") || p.includes("gemini")) {
-    return "gcp.gemini";
-  }
-  if (p.includes("bedrock")) {
-    return "aws.bedrock";
-  }
-  if (p.includes("mistral")) {
-    return "mistral_ai";
-  }
-  if (p.includes("deepseek")) {
-    return "deepseek";
-  }
-  if (p.includes("groq")) {
-    return "groq";
-  }
-  if (p.includes("cohere")) {
-    return "cohere";
-  }
-  if (p.includes("perplexity")) {
-    return "perplexity";
-  }
-  return provider;
-}
-
-class LoggingTraceExporter implements SpanExporter {
-  #inner: SpanExporter;
-  #log: { info: (msg: string) => void };
-  #dumpPath?: string;
-  #dumpFailed = false;
-
-  constructor(inner: SpanExporter, log: { info: (msg: string) => void }, dumpPath?: string) {
-    this.#inner = inner;
-    this.#log = log;
-    this.#dumpPath = dumpPath;
-  }
-
-  export(spans: ReadableSpan[], resultCallback: (result: ExportResult) => void) {
-    const first = spans[0];
-    const details = first ? ` first=${first.name}` : "";
-    this.#log.info(`diagnostics-otel: exporting ${spans.length} spans.${details}`);
-    if (this.#dumpPath && !this.#dumpFailed) {
-      try {
-        for (const span of spans) {
-          const startMs = hrTimeToMilliseconds(span.startTime);
-          const endMs = hrTimeToMilliseconds(span.endTime);
-          const parentCtxField = (span as { parentSpanContext?: { spanId?: string } })
-            .parentSpanContext;
-          const payload = {
-            ts: new Date().toISOString(),
-            name: span.name,
-            traceId: span.spanContext().traceId,
-            spanId: span.spanContext().spanId,
-            parentSpanId: parentCtxField?.spanId,
-            kind: span.kind,
-            status: span.status,
-            attributes: span.attributes,
-            resource: span.resource?.attributes,
-            startTimeMs: startMs,
-            endTimeMs: endMs,
-            durationMs: endMs - startMs,
-          };
-          fs.appendFileSync(
-            this.#dumpPath,
-            `${JSON.stringify(payload, (_key, value) =>
-              typeof value === "bigint" ? Number(value) : value,
-            )}\n`,
-          );
-        }
-      } catch (err) {
-        this.#dumpFailed = true;
-        this.#log.info(`diagnostics-otel: failed to write dump file: ${String(err)}`);
-      }
-    }
-    try {
-      this.#inner.export(spans, (result) => {
-        if (result.code !== ExportResultCode.SUCCESS) {
-          this.#log.info(
-            `diagnostics-otel: export failed code=${result.code} error=${String(result.error)}`,
-          );
-        }
-        resultCallback(result);
-      });
-    } catch (err) {
-      this.#log.info(`diagnostics-otel: export threw: ${String(err)}`);
-      resultCallback({ code: ExportResultCode.FAILED, error: err as Error });
-    }
-  }
-
-  async shutdown() {
-    await this.#inner.shutdown();
-  }
-
-  async forceFlush() {
-    if (this.#inner.forceFlush) {
-      await this.#inner.forceFlush();
-    }
-  }
-}
-
-interface ActiveTrace {
-  span: Span;
-  startedAt: number;
-  sessionKey?: string;
-  channel?: string;
-}
+import {
+  recordRunCompleted,
+  recordRunStarted,
+  recordModelInferenceStarted,
+  recordModelInference,
+  recordWebhookReceived,
+  recordWebhookProcessed,
+  recordWebhookError,
+  recordMessageQueued,
+  recordMessageProcessed,
+  recordLaneEnqueue,
+  recordLaneDequeue,
+  recordSessionState,
+  recordSessionStuck,
+  recordRunAttempt,
+  recordToolExecution,
+  recordHeartbeat,
+  type OtelHandlerCtx,
+} from "./otel-event-handlers.js";
+import { createMetricInstruments } from "./otel-metrics.js";
+import {
+  DEFAULT_SERVICE_NAME,
+  OTEL_DEBUG_ENV,
+  OTEL_DUMP_ENV,
+  normalizeEndpoint,
+  resolveOtelUrl,
+  resolveSampleRate,
+  LoggingTraceExporter,
+  type ActiveTrace,
+} from "./otel-utils.js";
 
 export function createDiagnosticsOtelService(): OpenClawPluginService {
   let sdk: NodeSDK | null = null;
@@ -258,14 +133,6 @@ export function createDiagnosticsOtelService(): OpenClawPluginService {
           resource,
           ...(traceExporter ? { traceExporter } : {}),
           ...(metricReader ? { metricReader } : {}),
-          // DEBUG ONLY: keep the explicit processor available while validating exports.
-          // ...(traceExporter && debugExports
-          //   ? {
-          //       spanProcessor: new BatchSpanProcessor(traceExporter, {
-          //         scheduledDelayMillis: 1000,
-          //       }),
-          //     }
-          //   : {}),
           ...(sampleRate !== undefined
             ? {
                 sampler: new ParentBasedSampler({
@@ -289,97 +156,7 @@ export function createDiagnosticsOtelService(): OpenClawPluginService {
 
       const meter = metrics.getMeter("openclaw");
       const tracer = trace.getTracer("openclaw");
-
-      const tokensCounter = meter.createCounter("openclaw.tokens", {
-        unit: "1",
-        description: "Token usage by type",
-      });
-      const costCounter = meter.createCounter("openclaw.cost.usd", {
-        unit: "1",
-        description: "Estimated model cost (USD)",
-      });
-      const durationHistogram = meter.createHistogram("openclaw.run.duration_ms", {
-        unit: "ms",
-        description: "Agent run duration",
-      });
-      const contextHistogram = meter.createHistogram("openclaw.context.tokens", {
-        unit: "1",
-        description: "Context window size and usage",
-      });
-      const webhookReceivedCounter = meter.createCounter("openclaw.webhook.received", {
-        unit: "1",
-        description: "Webhook requests received",
-      });
-      const webhookErrorCounter = meter.createCounter("openclaw.webhook.error", {
-        unit: "1",
-        description: "Webhook processing errors",
-      });
-      const webhookDurationHistogram = meter.createHistogram("openclaw.webhook.duration_ms", {
-        unit: "ms",
-        description: "Webhook processing duration",
-      });
-      const messageQueuedCounter = meter.createCounter("openclaw.message.queued", {
-        unit: "1",
-        description: "Messages queued for processing",
-      });
-      const messageProcessedCounter = meter.createCounter("openclaw.message.processed", {
-        unit: "1",
-        description: "Messages processed by outcome",
-      });
-      const messageDurationHistogram = meter.createHistogram("openclaw.message.duration_ms", {
-        unit: "ms",
-        description: "Message processing duration",
-      });
-      const queueDepthHistogram = meter.createHistogram("openclaw.queue.depth", {
-        unit: "1",
-        description: "Queue depth on enqueue/dequeue",
-      });
-      const queueWaitHistogram = meter.createHistogram("openclaw.queue.wait_ms", {
-        unit: "ms",
-        description: "Queue wait time before execution",
-      });
-      const laneEnqueueCounter = meter.createCounter("openclaw.queue.lane.enqueue", {
-        unit: "1",
-        description: "Command queue lane enqueue events",
-      });
-      const laneDequeueCounter = meter.createCounter("openclaw.queue.lane.dequeue", {
-        unit: "1",
-        description: "Command queue lane dequeue events",
-      });
-      const sessionStateCounter = meter.createCounter("openclaw.session.state", {
-        unit: "1",
-        description: "Session state transitions",
-      });
-      const sessionStuckCounter = meter.createCounter("openclaw.session.stuck", {
-        unit: "1",
-        description: "Sessions stuck in processing",
-      });
-      const sessionStuckAgeHistogram = meter.createHistogram("openclaw.session.stuck_age_ms", {
-        unit: "ms",
-        description: "Age of stuck sessions",
-      });
-      const runAttemptCounter = meter.createCounter("openclaw.run.attempt", {
-        unit: "1",
-        description: "Run attempts",
-      });
-
-      // GenAI semantic convention metrics (v1.38+)
-      const genAiOperationDuration = meter.createHistogram("gen_ai.client.operation.duration", {
-        unit: "s",
-        description: "GenAI operation duration",
-      });
-      const genAiTokenUsage = meter.createHistogram("gen_ai.client.token.usage", {
-        unit: "{token}",
-        description: "GenAI token usage",
-      });
-      const genAiTtft = meter.createHistogram("gen_ai.client.time_to_first_token", {
-        unit: "s",
-        description: "Time to first token from the model",
-      });
-      const inferenceErrorCounter = meter.createCounter("openclaw.inference.error", {
-        unit: "1",
-        description: "Model inference errors by type",
-      });
+      const otelMetrics = createMetricInstruments(meter);
 
       if (logsEnabled) {
         const logExporter = new OTLPLogExporter({
@@ -533,6 +310,12 @@ export function createDiagnosticsOtelService(): OpenClawPluginService {
         }
       };
 
+      const runSpans = new Map<string, { span: Span; createdAt: number }>();
+      const RUN_SPAN_TTL_MS = 10 * 60 * 1000;
+      const inferenceSpans = new Map<string, { span: Span; createdAt: number }>();
+      const INFERENCE_SPAN_TTL_MS = 10 * 60 * 1000;
+      const activeInferenceSpanByRunId = new Map<string, Span>();
+
       const createToolSpan = (
         evt: Extract<DiagnosticEventPayload, { type: "tool.execution" }>,
         parentCtx?: ReturnType<typeof context.active>,
@@ -633,11 +416,23 @@ export function createDiagnosticsOtelService(): OpenClawPluginService {
         return span;
       };
 
-      const runSpans = new Map<string, { span: Span; createdAt: number }>();
-      const RUN_SPAN_TTL_MS = 10 * 60 * 1000;
-      const inferenceSpans = new Map<string, { span: Span; createdAt: number }>();
-      const INFERENCE_SPAN_TTL_MS = 10 * 60 * 1000;
-      const activeInferenceSpanByRunId = new Map<string, Span>();
+      // Construct the handler context object used by all event handlers
+      const hctx: OtelHandlerCtx = {
+        tracer,
+        metrics: otelMetrics,
+        captureContent,
+        tracesEnabled,
+        debugExports,
+        logger: ctx.logger,
+        activeTraces,
+        runSpans,
+        inferenceSpans,
+        activeInferenceSpanByRunId,
+        spanWithDuration,
+        safeJsonStringify,
+        createToolSpan,
+        ensureRunSpan,
+      };
 
       // Periodic cleanup of orphaned buffer entries
       bufferCleanupTimer = setInterval(() => {
@@ -682,620 +477,58 @@ export function createDiagnosticsOtelService(): OpenClawPluginService {
       }, 60_000);
       bufferCleanupTimer.unref?.();
 
-      const recordRunCompleted = (
-        evt: Extract<DiagnosticEventPayload, { type: "run.completed" }>,
-      ) => {
-        const attrs = {
-          "openclaw.channel": evt.channel ?? "unknown",
-          "openclaw.provider": evt.provider ?? "unknown",
-          "openclaw.model": evt.model ?? "unknown",
-        };
-
-        const usage = evt.usage;
-        if (usage.input) {
-          tokensCounter.add(usage.input, { ...attrs, "openclaw.token": "input" });
-        }
-        if (usage.output) {
-          tokensCounter.add(usage.output, { ...attrs, "openclaw.token": "output" });
-        }
-        if (usage.cacheRead) {
-          tokensCounter.add(usage.cacheRead, { ...attrs, "openclaw.token": "cache_read" });
-        }
-        if (usage.cacheWrite) {
-          tokensCounter.add(usage.cacheWrite, { ...attrs, "openclaw.token": "cache_write" });
-        }
-        if (usage.promptTokens) {
-          tokensCounter.add(usage.promptTokens, { ...attrs, "openclaw.token": "prompt" });
-        }
-        if (usage.total) {
-          tokensCounter.add(usage.total, { ...attrs, "openclaw.token": "total" });
-        }
-
-        if (evt.costUsd) {
-          costCounter.add(evt.costUsd, attrs);
-        }
-        if (evt.durationMs) {
-          durationHistogram.record(evt.durationMs, attrs);
-        }
-        if (evt.context?.limit) {
-          contextHistogram.record(evt.context.limit, {
-            ...attrs,
-            "openclaw.context": "limit",
-          });
-        }
-        if (evt.context?.used) {
-          contextHistogram.record(evt.context.used, {
-            ...attrs,
-            "openclaw.context": "used",
-          });
-        }
-
-        if (!tracesEnabled) {
-          return;
-        }
-
-        // Only put lightweight envelope attributes on the agent.turn span.
-        // gen_ai.* inference attributes (model, messages, tokens, etc.) belong
-        // exclusively on the child chat spans created by recordModelInferenceCompleted.
-        const turnAttrs: Record<string, string | number | string[]> = {
-          ...attrs,
-          "openclaw.runId": evt.runId,
-          "openclaw.sessionKey": evt.sessionKey ?? "",
-          "openclaw.sessionId": evt.sessionId ?? "",
-        };
-        if (typeof usage.input === "number") {
-          turnAttrs["openclaw.tokens.input"] = usage.input;
-        }
-        if (typeof usage.output === "number") {
-          turnAttrs["openclaw.tokens.output"] = usage.output;
-        }
-        if (typeof usage.cacheRead === "number") {
-          turnAttrs["openclaw.tokens.cache_read"] = usage.cacheRead;
-        }
-        if (typeof usage.cacheWrite === "number") {
-          turnAttrs["openclaw.tokens.cache_write"] = usage.cacheWrite;
-        }
-        if (typeof usage.total === "number") {
-          turnAttrs["openclaw.tokens.total"] = usage.total;
-        }
-        if (evt.sessionId) {
-          turnAttrs["gen_ai.conversation.id"] = evt.sessionId;
-        }
-        const runSpan = ensureRunSpan({
-          runId: evt.runId,
-          sessionKey: evt.sessionKey,
-          sessionId: evt.sessionId,
-          channel: evt.channel,
-          attributes: turnAttrs,
-          startTimeMs:
-            typeof evt.durationMs === "number"
-              ? Date.now() - Math.max(0, evt.durationMs)
-              : undefined,
-        });
-        const finalRunSpan =
-          runSpan ??
-          spanWithDuration("openclaw.agent.turn", turnAttrs, evt.durationMs, SpanKind.INTERNAL);
-
-        if (evt.error) {
-          finalRunSpan.setStatus({ code: SpanStatusCode.ERROR, message: evt.error });
-          if (evt.errorType) {
-            finalRunSpan.setAttribute("gen_ai.error.type", evt.errorType);
-          }
-          finalRunSpan.setAttribute("openclaw.error", evt.error);
-        }
-
-        finalRunSpan.end();
-        runSpans.delete(evt.runId);
-      };
-
-      const recordRunStarted = (evt: Extract<DiagnosticEventPayload, { type: "run.started" }>) => {
-        if (!tracesEnabled) {
-          return;
-        }
-        ensureRunSpan({
-          runId: evt.runId,
-          sessionKey: evt.sessionKey,
-          sessionId: evt.sessionId,
-          channel: evt.channel,
-          startTimeMs: evt.ts,
-        });
-      };
-
-      const recordModelInferenceStarted = (
-        evt: Extract<DiagnosticEventPayload, { type: "model.inference.started" }>,
-      ) => {
-        if (!tracesEnabled) {
-          return;
-        }
-        const opName = evt.operationName ?? "chat";
-
-        const runSpan = ensureRunSpan({
-          runId: evt.runId,
-          sessionKey: evt.sessionKey,
-          sessionId: evt.sessionId,
-          channel: evt.channel,
-          startTimeMs: evt.ts,
-        });
-        const parentCtx = runSpan ? trace.setSpan(context.active(), runSpan) : context.active();
-
-        const spanAttrs: Record<string, string | number | string[]> = {
-          "gen_ai.operation.name": opName,
-          "gen_ai.provider.name": mapProviderName(evt.provider),
-          "gen_ai.request.model": evt.model ?? "unknown",
-        };
-        if (evt.sessionKey) {
-          spanAttrs["openclaw.sessionKey"] = evt.sessionKey;
-        }
-        if (evt.sessionId) {
-          spanAttrs["openclaw.sessionId"] = evt.sessionId;
-          spanAttrs["gen_ai.conversation.id"] = evt.sessionId;
-        }
-        if (typeof evt.callIndex === "number") {
-          spanAttrs["openclaw.callIndex"] = evt.callIndex;
-        }
-        if (typeof evt.temperature === "number") {
-          spanAttrs["gen_ai.request.temperature"] = evt.temperature;
-        }
-        if (typeof evt.maxOutputTokens === "number") {
-          spanAttrs["gen_ai.request.max_tokens"] = evt.maxOutputTokens;
-        }
-        if (captureContent) {
-          if (evt.inputMessages) {
-            spanAttrs["gen_ai.input.messages"] = JSON.stringify(evt.inputMessages);
-          }
-          if (evt.systemInstructions) {
-            spanAttrs["gen_ai.system_instructions"] = JSON.stringify(evt.systemInstructions);
-          }
-          if (evt.toolDefinitions) {
-            spanAttrs["gen_ai.request.tools"] = JSON.stringify(evt.toolDefinitions);
-          }
-        }
-
-        const spanName = `${opName} ${evt.model ?? "unknown"}`;
-        const span = tracer.startSpan(
-          spanName,
-          { attributes: spanAttrs, startTime: evt.ts, kind: SpanKind.CLIENT },
-          parentCtx,
-        );
-        if (debugExports) {
-          ctx.logger.info(`diagnostics-otel: span created ${spanName}`);
-        }
-
-        if (evt.runId && typeof evt.callIndex === "number") {
-          inferenceSpans.set(`${evt.runId}:${evt.callIndex}`, { span, createdAt: Date.now() });
-        }
-        if (evt.runId) {
-          activeInferenceSpanByRunId.set(evt.runId, span);
-        }
-      };
-
-      const recordModelInference = (
-        evt: Extract<DiagnosticEventPayload, { type: "model.inference" }>,
-      ) => {
-        const opName = evt.operationName ?? "chat";
-        const usage = evt.usage ?? {};
-
-        // GenAI standard metrics (gen_ai_latest_experimental)
-        const genAiMetricAttrs = {
-          "gen_ai.operation.name": opName,
-          "gen_ai.provider.name": mapProviderName(evt.provider),
-          "gen_ai.request.model": evt.model ?? "unknown",
-        };
-        if (evt.durationMs) {
-          genAiOperationDuration.record(evt.durationMs / 1000, genAiMetricAttrs);
-        }
-        if (usage.input) {
-          genAiTokenUsage.record(usage.input, {
-            ...genAiMetricAttrs,
-            "gen_ai.token.type": "input",
-          });
-        }
-        if (usage.output) {
-          genAiTokenUsage.record(usage.output, {
-            ...genAiMetricAttrs,
-            "gen_ai.token.type": "output",
-          });
-        }
-        if (typeof evt.ttftMs === "number") {
-          genAiTtft.record(evt.ttftMs / 1000, genAiMetricAttrs);
-        }
-        if (evt.error && evt.errorType) {
-          inferenceErrorCounter.add(1, {
-            ...genAiMetricAttrs,
-            "openclaw.error.type": evt.errorType,
-          });
-        }
-
-        if (!tracesEnabled) {
-          return;
-        }
-
-        const spanAttrs: Record<string, string | number | string[]> = {
-          "openclaw.channel": evt.channel ?? "unknown",
-          "openclaw.provider": evt.provider ?? "unknown",
-          "openclaw.model": evt.model ?? "unknown",
-          "openclaw.sessionKey": evt.sessionKey ?? "",
-          "openclaw.sessionId": evt.sessionId ?? "",
-          "gen_ai.operation.name": opName,
-          "gen_ai.provider.name": mapProviderName(evt.provider),
-          "gen_ai.request.model": evt.model ?? "unknown",
-        };
-        if (typeof usage.input === "number") {
-          spanAttrs["openclaw.tokens.input"] = usage.input;
-        }
-        if (typeof usage.output === "number") {
-          spanAttrs["openclaw.tokens.output"] = usage.output;
-          spanAttrs["gen_ai.usage.output_tokens"] = usage.output;
-        }
-        if (typeof usage.cacheRead === "number") {
-          spanAttrs["openclaw.tokens.cache_read"] = usage.cacheRead;
-          spanAttrs["gen_ai.usage.cache_read.input_tokens"] = usage.cacheRead;
-        }
-        if (typeof usage.cacheWrite === "number") {
-          spanAttrs["openclaw.tokens.cache_write"] = usage.cacheWrite;
-          spanAttrs["gen_ai.usage.cache_creation.input_tokens"] = usage.cacheWrite;
-        }
-        if (typeof usage.total === "number") {
-          spanAttrs["openclaw.tokens.total"] = usage.total;
-        }
-        // OTEL GenAI semconv: gen_ai.usage.input_tokens SHOULD include all input
-        // tokens including cached tokens. Use promptTokens (input + cacheRead +
-        // cacheWrite) when available, fall back to raw input.
-        const inputTokensForOtel = usage.promptTokens ?? usage.input;
-        if (typeof inputTokensForOtel === "number") {
-          spanAttrs["gen_ai.usage.input_tokens"] = inputTokensForOtel;
-        }
-        if (evt.responseModel) {
-          spanAttrs["gen_ai.response.model"] = evt.responseModel;
-        }
-        if (evt.responseId) {
-          spanAttrs["gen_ai.response.id"] = evt.responseId;
-        }
-        if (evt.finishReasons?.length) {
-          spanAttrs["gen_ai.response.finish_reasons"] = evt.finishReasons;
-        }
-        if (evt.sessionId) {
-          spanAttrs["gen_ai.conversation.id"] = evt.sessionId;
-        }
-        if (typeof evt.temperature === "number") {
-          spanAttrs["gen_ai.request.temperature"] = evt.temperature;
-        }
-        if (typeof evt.maxOutputTokens === "number") {
-          spanAttrs["gen_ai.request.max_tokens"] = evt.maxOutputTokens;
-        }
-        if (typeof evt.ttftMs === "number") {
-          spanAttrs["gen_ai.client.time_to_first_token"] = evt.ttftMs;
-        }
-        if (typeof evt.callIndex === "number") {
-          spanAttrs["openclaw.callIndex"] = evt.callIndex;
-        }
-        if (captureContent && evt.outputMessages) {
-          spanAttrs["gen_ai.output.messages"] = JSON.stringify(evt.outputMessages);
-        }
-        const span =
-          evt.runId && typeof evt.callIndex === "number"
-            ? inferenceSpans.get(`${evt.runId}:${evt.callIndex}`)?.span
-            : undefined;
-        const activeSpan = evt.runId ? activeInferenceSpanByRunId.get(evt.runId) : undefined;
-        const resolved = span ?? activeSpan;
-
-        if (!tracesEnabled) {
-          return;
-        }
-
-        const spanName = `${opName} ${evt.model ?? "unknown"}`;
-        const runEntry = evt.runId ? runSpans.get(evt.runId) : undefined;
-        const parentCtx = runEntry
-          ? trace.setSpan(context.active(), runEntry.span)
-          : context.active();
-        const finalSpan =
-          resolved ??
-          spanWithDuration(spanName, spanAttrs, evt.durationMs, SpanKind.CLIENT, parentCtx);
-
-        for (const [key, value] of Object.entries(spanAttrs)) {
-          finalSpan.setAttribute(key, value);
-        }
-        if (captureContent && evt.outputMessages) {
-          finalSpan.setAttribute("gen_ai.output.messages", JSON.stringify(evt.outputMessages));
-        }
-        if (evt.error) {
-          finalSpan.setStatus({ code: SpanStatusCode.ERROR, message: evt.error });
-          if (evt.errorType) {
-            finalSpan.setAttribute("gen_ai.error.type", evt.errorType);
-          }
-          finalSpan.setAttribute("openclaw.error", evt.error);
-        }
-        finalSpan.end();
-
-        if (evt.runId) {
-          activeInferenceSpanByRunId.delete(evt.runId);
-          if (typeof evt.callIndex === "number") {
-            inferenceSpans.delete(`${evt.runId}:${evt.callIndex}`);
-          }
-        }
-      };
-
-      const recordWebhookReceived = (
-        evt: Extract<DiagnosticEventPayload, { type: "webhook.received" }>,
-      ) => {
-        const attrs = {
-          "openclaw.channel": evt.channel ?? "unknown",
-          "openclaw.webhook": evt.updateType ?? "unknown",
-        };
-        webhookReceivedCounter.add(1, attrs);
-      };
-
-      const recordWebhookProcessed = (
-        evt: Extract<DiagnosticEventPayload, { type: "webhook.processed" }>,
-      ) => {
-        const attrs = {
-          "openclaw.channel": evt.channel ?? "unknown",
-          "openclaw.webhook": evt.updateType ?? "unknown",
-        };
-        if (typeof evt.durationMs === "number") {
-          webhookDurationHistogram.record(evt.durationMs, attrs);
-        }
-        if (!tracesEnabled) {
-          return;
-        }
-        const spanAttrs: Record<string, string | number> = { ...attrs };
-        if (evt.chatId !== undefined) {
-          spanAttrs["openclaw.chatId"] = String(evt.chatId);
-        }
-        const span = spanWithDuration("openclaw.webhook.processed", spanAttrs, evt.durationMs);
-        if (debugExports) {
-          ctx.logger.info(`diagnostics-otel: span created openclaw.webhook.processed`);
-        }
-        span.end();
-      };
-
-      const recordWebhookError = (
-        evt: Extract<DiagnosticEventPayload, { type: "webhook.error" }>,
-      ) => {
-        const attrs = {
-          "openclaw.channel": evt.channel ?? "unknown",
-          "openclaw.webhook": evt.updateType ?? "unknown",
-        };
-        webhookErrorCounter.add(1, attrs);
-        if (!tracesEnabled) {
-          return;
-        }
-        const spanAttrs: Record<string, string | number> = {
-          ...attrs,
-          "openclaw.error": evt.error,
-        };
-        if (evt.chatId !== undefined) {
-          spanAttrs["openclaw.chatId"] = String(evt.chatId);
-        }
-        const span = tracer.startSpan("openclaw.webhook.error", {
-          attributes: spanAttrs,
-        });
-        span.setStatus({ code: SpanStatusCode.ERROR, message: evt.error });
-        if (debugExports) {
-          ctx.logger.info(`diagnostics-otel: span created openclaw.webhook.error`);
-        }
-        span.end();
-      };
-
-      const recordMessageQueued = (
-        evt: Extract<DiagnosticEventPayload, { type: "message.queued" }>,
-      ) => {
-        const attrs = {
-          "openclaw.channel": evt.channel ?? "unknown",
-          "openclaw.source": evt.source ?? "unknown",
-        };
-        messageQueuedCounter.add(1, attrs);
-        if (typeof evt.queueDepth === "number") {
-          queueDepthHistogram.record(evt.queueDepth, attrs);
-        }
-
-        // Create root span for nested trace hierarchy.
-        // The message lifecycle is: message.queued → run.started → model.inference → tools → run.completed → message.processed.
-        // This root span covers the entire lifecycle; agent.turn, LLM calls, and tool executions are nested as children.
-        // message.processed ends this span (it does not create a new child).
-        if (tracesEnabled && evt.sessionKey) {
-          const rootSpan = tracer.startSpan("openclaw.message", {
-            kind: SpanKind.SERVER,
-            attributes: {
-              "openclaw.sessionKey": evt.sessionKey,
-              "openclaw.channel": evt.channel ?? "unknown",
-              "openclaw.source": evt.source ?? "unknown",
-              ...(typeof evt.queueDepth === "number"
-                ? { "openclaw.queueDepth": evt.queueDepth }
-                : {}),
-            },
-          });
-
-          activeTraces.set(evt.sessionKey, {
-            span: rootSpan,
-            startedAt: Date.now(),
-            sessionKey: evt.sessionKey,
-            channel: evt.channel,
-          });
-
-          if (debugExports) {
-            ctx.logger.info(`diagnostics-otel: created root span for session=${evt.sessionKey}`);
-          }
-        }
-      };
-
-      const recordMessageProcessed = (
-        evt: Extract<DiagnosticEventPayload, { type: "message.processed" }>,
-      ) => {
-        const attrs = {
-          "openclaw.channel": evt.channel ?? "unknown",
-          "openclaw.outcome": evt.outcome ?? "unknown",
-        };
-        messageProcessedCounter.add(1, attrs);
-        if (typeof evt.durationMs === "number") {
-          messageDurationHistogram.record(evt.durationMs, attrs);
-        }
-
-        // End root trace span created by message.queued.
-        // No standalone span here — the root span covers the full message lifecycle.
-        const sessionKey = evt.sessionKey;
-        const activeTrace = sessionKey ? activeTraces.get(sessionKey) : null;
-        if (activeTrace) {
-          activeTrace.span.setAttribute("openclaw.outcome", evt.outcome ?? "unknown");
-          if (typeof evt.durationMs === "number") {
-            activeTrace.span.setAttribute("openclaw.durationMs", evt.durationMs);
-          }
-          if (evt.messageId != null) {
-            activeTrace.span.setAttribute("openclaw.messageId", String(evt.messageId));
-          }
-          if (evt.outcome === "error" && evt.error) {
-            activeTrace.span.setStatus({
-              code: SpanStatusCode.ERROR,
-              message: evt.error,
-            });
-          } else {
-            activeTrace.span.setStatus({ code: SpanStatusCode.OK });
-          }
-          activeTrace.span.end();
-          activeTraces.delete(sessionKey);
-          if (debugExports) {
-            ctx.logger.info(`diagnostics-otel: ended root span for session=${sessionKey}`);
-          }
-        } else if (debugExports) {
-          ctx.logger.info(
-            `diagnostics-otel: no active root trace for message.processed sessionKey=${sessionKey ?? "undefined"}`,
-          );
-        }
-      };
-
-      const recordLaneEnqueue = (
-        evt: Extract<DiagnosticEventPayload, { type: "queue.lane.enqueue" }>,
-      ) => {
-        const attrs = { "openclaw.lane": evt.lane };
-        laneEnqueueCounter.add(1, attrs);
-        queueDepthHistogram.record(evt.queueSize, attrs);
-      };
-
-      const recordLaneDequeue = (
-        evt: Extract<DiagnosticEventPayload, { type: "queue.lane.dequeue" }>,
-      ) => {
-        const attrs = { "openclaw.lane": evt.lane };
-        laneDequeueCounter.add(1, attrs);
-        queueDepthHistogram.record(evt.queueSize, attrs);
-        if (typeof evt.waitMs === "number") {
-          queueWaitHistogram.record(evt.waitMs, attrs);
-        }
-      };
-
-      const recordSessionState = (
-        evt: Extract<DiagnosticEventPayload, { type: "session.state" }>,
-      ) => {
-        const attrs: Record<string, string> = { "openclaw.state": evt.state };
-        if (evt.reason) {
-          attrs["openclaw.reason"] = evt.reason;
-        }
-        sessionStateCounter.add(1, attrs);
-      };
-
-      const recordSessionStuck = (
-        evt: Extract<DiagnosticEventPayload, { type: "session.stuck" }>,
-      ) => {
-        const attrs: Record<string, string> = { "openclaw.state": evt.state };
-        sessionStuckCounter.add(1, attrs);
-        if (typeof evt.ageMs === "number") {
-          sessionStuckAgeHistogram.record(evt.ageMs, attrs);
-        }
-        if (!tracesEnabled) {
-          return;
-        }
-        const spanAttrs: Record<string, string | number> = { ...attrs };
-        if (evt.sessionKey) {
-          spanAttrs["openclaw.sessionKey"] = evt.sessionKey;
-        }
-        if (evt.sessionId) {
-          spanAttrs["openclaw.sessionId"] = evt.sessionId;
-        }
-        spanAttrs["openclaw.queueDepth"] = evt.queueDepth ?? 0;
-        spanAttrs["openclaw.ageMs"] = evt.ageMs;
-        const span = tracer.startSpan("openclaw.session.stuck", { attributes: spanAttrs });
-        span.setStatus({ code: SpanStatusCode.ERROR, message: "session stuck" });
-        if (debugExports) {
-          ctx.logger.info(`diagnostics-otel: span created openclaw.session.stuck`);
-        }
-        span.end();
-      };
-
-      const recordRunAttempt = (evt: Extract<DiagnosticEventPayload, { type: "run.attempt" }>) => {
-        runAttemptCounter.add(1, { "openclaw.attempt": evt.attempt });
-      };
-
-      const recordToolExecution = (
-        evt: Extract<DiagnosticEventPayload, { type: "tool.execution" }>,
-      ) => {
-        if (!tracesEnabled) {
-          return;
-        }
-        const runId = evt.runId;
-        const inferenceSpan = runId ? activeInferenceSpanByRunId.get(runId) : undefined;
-        const runEntry = runId ? runSpans.get(runId) : undefined;
-        const parentSpan = inferenceSpan ?? runEntry?.span;
-        const parentCtx = parentSpan ? trace.setSpan(context.active(), parentSpan) : undefined;
-        createToolSpan(evt, parentCtx);
-      };
-
-      const recordHeartbeat = (
-        evt: Extract<DiagnosticEventPayload, { type: "diagnostic.heartbeat" }>,
-      ) => {
-        queueDepthHistogram.record(evt.queued, { "openclaw.channel": "heartbeat" });
-      };
-
       unsubscribe = onDiagnosticEvent((evt: DiagnosticEventPayload) => {
         if (debugExports) {
           ctx.logger.info(`diagnostics-otel: event received ${evt.type}`);
         }
         switch (evt.type) {
           case "model.inference.started":
-            recordModelInferenceStarted(evt);
+            recordModelInferenceStarted(hctx, evt);
             return;
           case "model.inference":
-            recordModelInference(evt);
+            recordModelInference(hctx, evt);
             return;
           case "run.completed":
-            recordRunCompleted(evt);
+            recordRunCompleted(hctx, evt);
             return;
           case "webhook.received":
-            recordWebhookReceived(evt);
+            recordWebhookReceived(hctx, evt);
             return;
           case "webhook.processed":
-            recordWebhookProcessed(evt);
+            recordWebhookProcessed(hctx, evt);
             return;
           case "webhook.error":
-            recordWebhookError(evt);
+            recordWebhookError(hctx, evt);
             return;
           case "message.queued":
-            recordMessageQueued(evt);
+            recordMessageQueued(hctx, evt);
             return;
           case "message.processed":
-            recordMessageProcessed(evt);
+            recordMessageProcessed(hctx, evt);
             return;
           case "queue.lane.enqueue":
-            recordLaneEnqueue(evt);
+            recordLaneEnqueue(hctx, evt);
             return;
           case "queue.lane.dequeue":
-            recordLaneDequeue(evt);
+            recordLaneDequeue(hctx, evt);
             return;
           case "session.state":
-            recordSessionState(evt);
+            recordSessionState(hctx, evt);
             return;
           case "session.stuck":
-            recordSessionStuck(evt);
+            recordSessionStuck(hctx, evt);
             return;
           case "run.attempt":
-            recordRunAttempt(evt);
+            recordRunAttempt(hctx, evt);
             return;
           case "run.started":
-            recordRunStarted(evt);
+            recordRunStarted(hctx, evt);
             return;
           case "diagnostic.heartbeat":
-            recordHeartbeat(evt);
+            recordHeartbeat(hctx, evt);
             return;
           case "tool.execution":
-            recordToolExecution(evt);
+            recordToolExecution(hctx, evt);
             return;
         }
       });

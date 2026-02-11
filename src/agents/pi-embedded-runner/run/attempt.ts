@@ -1,5 +1,4 @@
 import type { AgentMessage } from "@mariozechner/pi-agent-core";
-import type { ImageContent } from "@mariozechner/pi-ai";
 import { streamSimple } from "@mariozechner/pi-ai";
 import { createAgentSession, SessionManager, SettingsManager } from "@mariozechner/pi-coding-agent";
 import fs from "node:fs/promises";
@@ -7,12 +6,7 @@ import os from "node:os";
 import type { EmbeddedRunAttemptParams, EmbeddedRunAttemptResult } from "./types.js";
 import { resolveHeartbeatPrompt } from "../../../auto-reply/heartbeat.js";
 import { resolveChannelCapabilities } from "../../../config/channel-capabilities.js";
-import {
-  emitDiagnosticEvent,
-  type GenAiMessage,
-  type GenAiPart,
-  type GenAiToolDef,
-} from "../../../infra/diagnostic-events.js";
+import { emitDiagnosticEvent } from "../../../infra/diagnostic-events.js";
 import { getMachineDisplayName } from "../../../infra/machine-name.js";
 import { MAX_IMAGE_BYTES } from "../../../media/constants.js";
 import { getGlobalHookRunner } from "../../../plugins/hook-runner-global.js";
@@ -94,165 +88,11 @@ import {
 } from "../system-prompt.js";
 import { splitSdkTools } from "../tool-split.js";
 import { describeUnknownError, mapThinkingLevel } from "../utils.js";
-import { detectAndLoadPromptImages } from "./images.js";
-
-export function injectHistoryImagesIntoMessages(
-  messages: AgentMessage[],
-  historyImagesByIndex: Map<number, ImageContent[]>,
-): boolean {
-  if (historyImagesByIndex.size === 0) {
-    return false;
-  }
-  let didMutate = false;
-
-  for (const [msgIndex, images] of historyImagesByIndex) {
-    // Bounds check: ensure index is valid before accessing
-    if (msgIndex < 0 || msgIndex >= messages.length) {
-      continue;
-    }
-    const msg = messages[msgIndex];
-    if (msg && msg.role === "user") {
-      // Convert string content to array format if needed
-      if (typeof msg.content === "string") {
-        msg.content = [{ type: "text", text: msg.content }];
-        didMutate = true;
-      }
-      if (Array.isArray(msg.content)) {
-        // Check for existing image content to avoid duplicates across turns
-        const existingImageData = new Set(
-          msg.content
-            .filter(
-              (c): c is ImageContent =>
-                c != null &&
-                typeof c === "object" &&
-                c.type === "image" &&
-                typeof c.data === "string",
-            )
-            .map((c) => c.data),
-        );
-        for (const img of images) {
-          // Only add if this image isn't already in the message
-          if (!existingImageData.has(img.data)) {
-            msg.content.push(img);
-            didMutate = true;
-          }
-        }
-      }
-    }
-  }
-
-  return didMutate;
-}
-
-function buildGenAiPartsFromContent(content: unknown): GenAiPart[] {
-  if (typeof content === "string") {
-    return [{ type: "text", content }];
-  }
-  if (!Array.isArray(content)) {
-    return [];
-  }
-  const parts: GenAiPart[] = [];
-  for (const item of content) {
-    if (!item || typeof item !== "object") {
-      continue;
-    }
-    const record = item as Record<string, unknown>;
-    if (record.type === "text" && typeof record.text === "string") {
-      parts.push({ type: "text", content: record.text });
-      continue;
-    }
-    if (record.type === "image" && typeof record.data === "string") {
-      parts.push({
-        type: "blob",
-        modality: "image",
-        mime_type: typeof record.mimeType === "string" ? record.mimeType : undefined,
-        content: record.data,
-      });
-    }
-  }
-  return parts;
-}
-
-function buildGenAiMessagesFromContext(messages: unknown): GenAiMessage[] | undefined {
-  if (!Array.isArray(messages)) {
-    return undefined;
-  }
-  const out: GenAiMessage[] = [];
-  for (const msg of messages) {
-    if (!msg || typeof msg !== "object") {
-      continue;
-    }
-    const record = msg as Record<string, unknown>;
-    const role = typeof record.role === "string" ? record.role : "";
-    if (role === "user") {
-      out.push({ role: "user", parts: buildGenAiPartsFromContent(record.content) });
-      continue;
-    }
-    if (role === "assistant") {
-      // Keep assistant parts to text only to avoid double-encoding tool calls here.
-      const parts: GenAiPart[] = [];
-      const content = record.content;
-      if (Array.isArray(content)) {
-        for (const block of content) {
-          if (!block || typeof block !== "object") {
-            continue;
-          }
-          const b = block as Record<string, unknown>;
-          if (b.type === "text" && typeof b.text === "string") {
-            parts.push({ type: "text", content: b.text });
-          }
-        }
-      }
-      out.push({ role: "assistant", parts });
-      continue;
-    }
-    if (role === "toolResult") {
-      const toolCallId = typeof record.toolCallId === "string" ? record.toolCallId : "";
-      const toolName = typeof record.toolName === "string" ? record.toolName : "";
-      // Represent tool results as a tool message with a tool_call_response part.
-      out.push({
-        role: "tool",
-        parts: [
-          {
-            type: "tool_call_response",
-            id: toolCallId,
-            response: {
-              toolName,
-              isError: Boolean(record.isError),
-              parts: buildGenAiPartsFromContent(record.content),
-            },
-          },
-        ],
-      });
-    }
-  }
-  return out;
-}
-
-function buildGenAiToolDefsFromContext(tools: unknown): GenAiToolDef[] | undefined {
-  if (!Array.isArray(tools)) {
-    return undefined;
-  }
-  const defs: GenAiToolDef[] = [];
-  for (const tool of tools) {
-    if (!tool || typeof tool !== "object") {
-      continue;
-    }
-    const record = tool as Record<string, unknown>;
-    const name = typeof record.name === "string" ? record.name : "";
-    if (!name) {
-      continue;
-    }
-    defs.push({
-      name,
-      ...(typeof record.description === "string" ? { description: record.description } : {}),
-      ...(record.parameters && typeof record.parameters === "object"
-        ? { parameters: record.parameters as Record<string, unknown> }
-        : {}),
-    });
-  }
-  return defs.length ? defs : undefined;
-}
+import {
+  buildGenAiMessagesFromContext,
+  buildGenAiToolDefsFromContext,
+} from "./diagnostic-builders.js";
+import { detectAndLoadPromptImages, injectHistoryImagesIntoMessages } from "./images.js";
 
 export async function runEmbeddedAttempt(
   params: EmbeddedRunAttemptParams,
