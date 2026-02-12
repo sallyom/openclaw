@@ -507,10 +507,6 @@ export async function runReplyAgent(params: {
         responseModel: runResult.meta.agentMeta?.model,
         inputMessages: inputMessages.length > 0 ? inputMessages : undefined,
         outputMessages: outputMessages.length > 0 ? outputMessages : undefined,
-        systemInstructions:
-          captureContent && runResult.meta.systemPromptText
-            ? [{ type: "text" as const, content: runResult.meta.systemPromptText }]
-            : undefined,
         temperature:
           typeof resolvedModelParams?.temperature === "number"
             ? resolvedModelParams.temperature

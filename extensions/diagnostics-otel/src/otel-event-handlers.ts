@@ -135,9 +135,6 @@ export function recordRunCompleted(
   if (evt.sessionId) {
     turnAttrs["gen_ai.conversation.id"] = evt.sessionId;
   }
-  if (hctx.captureContent.systemInstructions && evt.systemInstructions) {
-    turnAttrs["gen_ai.system_instructions"] = JSON.stringify(evt.systemInstructions);
-  }
   const runSpan = hctx.ensureRunSpan({
     runId: evt.runId,
     sessionKey: evt.sessionKey,
