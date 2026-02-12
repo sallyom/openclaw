@@ -400,7 +400,7 @@ describe("diagnostics-otel service – content capture & tools", () => {
     await service.stop?.();
   });
 
-  test("system instructions do NOT appear on agent.turn span (belong on child chat spans)", async () => {
+  test("system instructions appear on agent.turn span when captureContent is enabled", async () => {
     const service = createService();
     await service.start(createTestCtx({ captureContent: true }));
 
@@ -414,7 +414,9 @@ describe("diagnostics-otel service – content capture & tools", () => {
     });
 
     const attrs = telemetryState.tracer.startSpan.mock.calls[0]?.[1]?.attributes;
-    expect(attrs["gen_ai.system_instructions"]).toBeUndefined();
+    expect(attrs["gen_ai.system_instructions"]).toBe(
+      JSON.stringify([{ type: "text", content: "You are a helpful assistant." }]),
+    );
 
     await service.stop?.();
   });

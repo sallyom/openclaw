@@ -42,6 +42,7 @@ import {
   OTEL_DEBUG_ENV,
   OTEL_DUMP_ENV,
   normalizeEndpoint,
+  resolveCaptureContent,
   resolveOtelUrl,
   resolveSampleRate,
   LoggingTraceExporter,
@@ -281,7 +282,7 @@ export function createDiagnosticsOtelService(): OpenClawPluginService {
         });
       }
 
-      const captureContent = otel.captureContent === true;
+      const captureContent = resolveCaptureContent(otel.captureContent);
 
       const spanWithDuration = (
         name: string,
@@ -340,7 +341,7 @@ export function createDiagnosticsOtelService(): OpenClawPluginService {
         if (evt.channel) {
           spanAttrs["openclaw.channel"] = evt.channel;
         }
-        if (captureContent) {
+        if (captureContent.toolContent) {
           if (evt.toolInput != null) {
             spanAttrs["gen_ai.tool.call.arguments"] = safeJsonStringify(evt.toolInput);
           }

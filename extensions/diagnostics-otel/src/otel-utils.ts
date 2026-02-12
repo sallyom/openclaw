@@ -144,6 +144,50 @@ export class LoggingTraceExporter implements SpanExporter {
   }
 }
 
+export type ResolvedCaptureContent = {
+  inputMessages: boolean;
+  outputMessages: boolean;
+  systemInstructions: boolean;
+  toolDefinitions: boolean;
+  toolContent: boolean;
+};
+
+/**
+ * Resolve captureContent config to granular booleans.
+ * - `true` → all enabled
+ * - `false` / `undefined` → all disabled
+ * - object → each field defaults to `true` if omitted (opt-out model)
+ */
+export function resolveCaptureContent(
+  raw: boolean | Record<string, boolean | undefined> | undefined,
+): ResolvedCaptureContent {
+  if (raw === true) {
+    return {
+      inputMessages: true,
+      outputMessages: true,
+      systemInstructions: true,
+      toolDefinitions: true,
+      toolContent: true,
+    };
+  }
+  if (!raw || typeof raw !== "object") {
+    return {
+      inputMessages: false,
+      outputMessages: false,
+      systemInstructions: false,
+      toolDefinitions: false,
+      toolContent: false,
+    };
+  }
+  return {
+    inputMessages: raw.inputMessages !== false,
+    outputMessages: raw.outputMessages !== false,
+    systemInstructions: raw.systemInstructions !== false,
+    toolDefinitions: raw.toolDefinitions !== false,
+    toolContent: raw.toolContent !== false,
+  };
+}
+
 export interface ActiveTrace {
   span: Span;
   startedAt: number;

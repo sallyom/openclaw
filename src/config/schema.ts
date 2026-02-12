@@ -447,7 +447,7 @@ const FIELD_HELP: Record<string, string> = {
   "diagnostics.flags":
     'Enable targeted diagnostics logs by flag (e.g. ["telegram.http"]). Supports wildcards like "telegram.*" or "*".',
   "diagnostics.otel.captureContent":
-    "Record gen_ai.input.messages and gen_ai.output.messages on inference spans (opt-in, contains sensitive data; default: false).",
+    "Capture message content on OTel spans (opt-in, may contain sensitive data; default: false). Set to true to capture all content, or use an object with keys inputMessages, outputMessages, systemInstructions, toolDefinitions, toolContent to selectively disable categories (each defaults to true when using object form).",
   "diagnostics.cacheTrace.enabled":
     "Log cache trace snapshots for embedded agent runs (default: false).",
   "diagnostics.cacheTrace.filePath":

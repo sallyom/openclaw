@@ -497,7 +497,7 @@ export async function runEmbeddedAttempt(
 
       const captureContent =
         params.config?.diagnostics?.enabled === true &&
-        params.config?.diagnostics?.otel?.captureContent === true;
+        !!params.config?.diagnostics?.otel?.captureContent;
       if (captureContent) {
         // Capture the exact model request context at the point of the LLM call.
         // This is more trustworthy than sampling AgentSession.state.messages from streaming events.

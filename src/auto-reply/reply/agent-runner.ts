@@ -422,7 +422,7 @@ export async function runReplyAgent(params: {
     });
 
     if (isDiagnosticsEnabled(cfg)) {
-      const captureContent = cfg?.diagnostics?.otel?.captureContent === true;
+      const captureContent = !!cfg?.diagnostics?.otel?.captureContent;
       const input = usage?.input;
       const output = usage?.output;
       const cacheRead = usage?.cacheRead;

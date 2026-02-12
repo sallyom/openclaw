@@ -8,7 +8,7 @@ import {
   type Tracer,
 } from "@opentelemetry/api";
 import type { OtelMetricInstruments } from "./otel-metrics.js";
-import type { ActiveTrace } from "./otel-utils.js";
+import type { ActiveTrace, ResolvedCaptureContent } from "./otel-utils.js";
 import { mapProviderName } from "./otel-utils.js";
 
 export type AgentInfo = {
@@ -19,7 +19,7 @@ export type AgentInfo = {
 export interface OtelHandlerCtx {
   tracer: Tracer;
   metrics: OtelMetricInstruments;
-  captureContent: boolean;
+  captureContent: ResolvedCaptureContent;
   tracesEnabled: boolean;
   debugExports: boolean;
   logger: { info(msg: string): void };
@@ -135,6 +135,9 @@ export function recordRunCompleted(
   if (evt.sessionId) {
     turnAttrs["gen_ai.conversation.id"] = evt.sessionId;
   }
+  if (hctx.captureContent.systemInstructions && evt.systemInstructions) {
+    turnAttrs["gen_ai.system_instructions"] = JSON.stringify(evt.systemInstructions);
+  }
   const runSpan = hctx.ensureRunSpan({
     runId: evt.runId,
     sessionKey: evt.sessionKey,
@@ -231,16 +234,14 @@ export function recordModelInferenceStarted(
   if (typeof evt.maxOutputTokens === "number") {
     spanAttrs["gen_ai.request.max_tokens"] = evt.maxOutputTokens;
   }
-  if (hctx.captureContent) {
-    if (evt.inputMessages) {
-      spanAttrs["gen_ai.input.messages"] = JSON.stringify(evt.inputMessages);
-    }
-    if (evt.systemInstructions) {
-      spanAttrs["gen_ai.system_instructions"] = JSON.stringify(evt.systemInstructions);
-    }
-    if (evt.toolDefinitions) {
-      spanAttrs["gen_ai.tool.definitions"] = JSON.stringify(evt.toolDefinitions);
-    }
+  if (hctx.captureContent.inputMessages && evt.inputMessages) {
+    spanAttrs["gen_ai.input.messages"] = JSON.stringify(evt.inputMessages);
+  }
+  if (hctx.captureContent.systemInstructions && evt.systemInstructions) {
+    spanAttrs["gen_ai.system_instructions"] = JSON.stringify(evt.systemInstructions);
+  }
+  if (hctx.captureContent.toolDefinitions && evt.toolDefinitions) {
+    spanAttrs["gen_ai.tool.definitions"] = JSON.stringify(evt.toolDefinitions);
   }
 
   const spanName = `${opName} ${evt.model ?? "unknown"}`;
@@ -376,7 +377,7 @@ export function recordModelInference(
   if (typeof evt.callIndex === "number") {
     spanAttrs["openclaw.callIndex"] = evt.callIndex;
   }
-  if (hctx.captureContent && evt.outputMessages) {
+  if (hctx.captureContent.outputMessages && evt.outputMessages) {
     spanAttrs["gen_ai.output.messages"] = JSON.stringify(evt.outputMessages);
   }
   const span =
@@ -400,7 +401,7 @@ export function recordModelInference(
   for (const [key, value] of Object.entries(spanAttrs)) {
     finalSpan.setAttribute(key, value);
   }
-  if (hctx.captureContent && evt.outputMessages) {
+  if (hctx.captureContent.outputMessages && evt.outputMessages) {
     finalSpan.setAttribute("gen_ai.output.messages", JSON.stringify(evt.outputMessages));
   }
   if (evt.error) {

@@ -299,6 +299,11 @@ export function createFollowupRunner(params: {
             durationMs: Date.now() - runStartedAt,
             operationName: "chat",
             responseModel: runResult.meta.agentMeta?.model,
+            systemInstructions:
+              !!queued.run.config?.diagnostics?.otel?.captureContent &&
+              runResult.meta.systemPromptText
+                ? [{ type: "text" as const, content: runResult.meta.systemPromptText }]
+                : undefined,
           });
         }
       }
