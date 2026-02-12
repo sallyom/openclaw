@@ -46,8 +46,25 @@ import {
   resolveOtelUrl,
   resolveSampleRate,
   LoggingTraceExporter,
+  formatTraceparent,
   type ActiveTrace,
+  type TraceHeaders,
 } from "./otel-utils.js";
+
+// Global trace context registry for W3C Trace Context propagation.
+// Stores pre-formatted headers to avoid requiring @opentelemetry/api in main package.
+// Shared via Symbol.for so trace-context-propagator.ts can read without importing this module.
+const TRACE_CONTEXT_REGISTRY_KEY = Symbol.for("openclaw.diagnostics-otel.trace-headers");
+
+function getTraceHeadersRegistry(): Map<string, TraceHeaders> {
+  const globalStore = globalThis as {
+    [TRACE_CONTEXT_REGISTRY_KEY]?: Map<string, TraceHeaders>;
+  };
+  if (!globalStore[TRACE_CONTEXT_REGISTRY_KEY]) {
+    globalStore[TRACE_CONTEXT_REGISTRY_KEY] = new Map();
+  }
+  return globalStore[TRACE_CONTEXT_REGISTRY_KEY];
+}
 
 export function createDiagnosticsOtelService(): OpenClawPluginService {
   let sdk: NodeSDK | null = null;
@@ -164,6 +181,11 @@ export function createDiagnosticsOtelService(): OpenClawPluginService {
       const meter = metrics.getMeter("openclaw");
       const tracer = trace.getTracer("openclaw");
       const otelMetrics = createMetricInstruments(meter);
+
+      // Trace attribute constants (standard OTEL semantic conventions only)
+      const TRACE_ATTRS = {
+        SESSION_ID: "session.id",
+      } as const;
 
       if (logsEnabled) {
         const logExporter = new OTLPLogExporter({
@@ -411,10 +433,11 @@ export function createDiagnosticsOtelService(): OpenClawPluginService {
         };
         if (params.sessionKey) {
           spanAttrs["openclaw.sessionKey"] = params.sessionKey;
+          spanAttrs["gen_ai.conversation.id"] = params.sessionKey;
+          spanAttrs[TRACE_ATTRS.SESSION_ID] = params.sessionKey;
         }
         if (params.sessionId) {
           spanAttrs["openclaw.sessionId"] = params.sessionId;
-          spanAttrs["gen_ai.conversation.id"] = params.sessionId;
         }
         if (params.channel) {
           spanAttrs["openclaw.channel"] = params.channel;
@@ -447,6 +470,18 @@ export function createDiagnosticsOtelService(): OpenClawPluginService {
           parentCtx,
         );
         runSpans.set(runId, { span, createdAt: Date.now() });
+
+        // Store W3C trace headers for propagation to downstream LLM providers
+        if (params.sessionKey) {
+          const spanContext = span.spanContext();
+          if (spanContext.traceId && spanContext.spanId) {
+            getTraceHeadersRegistry().set(params.sessionKey, {
+              traceparent: formatTraceparent(spanContext),
+              ...(spanContext.traceState && { tracestate: spanContext.traceState.serialize() }),
+            });
+          }
+        }
+
         if (debugExports) {
           ctx.logger.info(`diagnostics-otel: span created ${spanName}`);
         }
@@ -471,6 +506,8 @@ export function createDiagnosticsOtelService(): OpenClawPluginService {
         safeJsonStringify,
         createToolSpan,
         ensureRunSpan,
+        TRACE_ATTRS,
+        getTraceHeadersRegistry,
       };
 
       // Periodic cleanup of orphaned buffer entries
@@ -606,6 +643,7 @@ export function createDiagnosticsOtelService(): OpenClawPluginService {
         await logProvider.shutdown().catch(() => undefined);
         logProvider = null;
       }
+      getTraceHeadersRegistry().clear();
       if (sdk) {
         await sdk.shutdown().catch(() => undefined);
         sdk = null;
