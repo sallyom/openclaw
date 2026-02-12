@@ -45,6 +45,7 @@ import {
   resolveOtelUrl,
   resolveSampleRate,
   LoggingTraceExporter,
+  formatTraceparent,
   type ActiveTrace,
 } from "./otel-utils.js";
 
@@ -177,7 +178,7 @@ export function createDiagnosticsOtelService(): OpenClawPluginService {
         MLFLOW_SPAN_OUTPUTS: "mlflow.spanOutputs",
         MLFLOW_TRACE_SESSION: "mlflow.trace.session",
         MLFLOW_TRACE_USER: "mlflow.trace.user",
-      };
+      } as const;
 
       // Global trace context registry for W3C Trace Context propagation
       // Stores pre-formatted headers to avoid requiring @opentelemetry/api in main package
@@ -494,14 +495,10 @@ export function createDiagnosticsOtelService(): OpenClawPluginService {
         if (params.sessionKey) {
           const spanContext = span.spanContext();
           if (spanContext.traceId && spanContext.spanId) {
-            const traceparent = `00-${spanContext.traceId}-${spanContext.spanId}-${spanContext.traceFlags
-              .toString(16)
-              .padStart(2, "0")}`;
-            const traceHeaders: TraceHeaders = {
-              traceparent,
+            getTraceHeadersRegistry().set(params.sessionKey, {
+              traceparent: formatTraceparent(spanContext),
               ...(spanContext.traceState && { tracestate: spanContext.traceState.serialize() }),
-            };
-            getTraceHeadersRegistry().set(params.sessionKey, traceHeaders);
+            });
           }
         }
 

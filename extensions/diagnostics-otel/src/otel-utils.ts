@@ -1,4 +1,4 @@
-import type { Span } from "@opentelemetry/api";
+import type { Span, SpanContext } from "@opentelemetry/api";
 import type { ExportResult } from "@opentelemetry/core";
 import type { ReadableSpan, SpanExporter } from "@opentelemetry/sdk-trace-base";
 import { ExportResultCode, hrTimeToMilliseconds } from "@opentelemetry/core";
@@ -142,6 +142,11 @@ export class LoggingTraceExporter implements SpanExporter {
       await this.#inner.forceFlush();
     }
   }
+}
+
+/** Format a W3C Trace Context traceparent header from a SpanContext. */
+export function formatTraceparent(spanContext: SpanContext): string {
+  return `00-${spanContext.traceId}-${spanContext.spanId}-${spanContext.traceFlags.toString(16).padStart(2, "0")}`;
 }
 
 export interface ActiveTrace {

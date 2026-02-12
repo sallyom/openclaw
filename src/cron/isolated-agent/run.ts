@@ -463,47 +463,39 @@ export async function runCronIsolatedAgentTurn(params: {
   const payloads = runResult.payloads ?? [];
 
   // Update token+model fields in the session store.
-  {
-    const usage = runResult.meta.agentMeta?.usage;
-    const modelUsed = runResult.meta.agentMeta?.model ?? fallbackModel ?? model;
-    const providerUsed = runResult.meta.agentMeta?.provider ?? fallbackProvider ?? provider;
-    const contextTokens =
-      agentCfg?.contextTokens ?? lookupContextTokens(modelUsed) ?? DEFAULT_CONTEXT_TOKENS;
+  const usage = runResult.meta.agentMeta?.usage;
+  const modelUsed = runResult.meta.agentMeta?.model ?? fallbackModel ?? model;
+  const providerUsed = runResult.meta.agentMeta?.provider ?? fallbackProvider ?? provider;
+  const contextTokens =
+    agentCfg?.contextTokens ?? lookupContextTokens(modelUsed) ?? DEFAULT_CONTEXT_TOKENS;
 
-    cronSession.sessionEntry.modelProvider = providerUsed;
-    cronSession.sessionEntry.model = modelUsed;
-    cronSession.sessionEntry.contextTokens = contextTokens;
-    if (isCliProvider(providerUsed, cfgWithAgentDefaults)) {
-      const cliSessionId = runResult.meta.agentMeta?.sessionId?.trim();
-      if (cliSessionId) {
-        setCliSessionId(cronSession.sessionEntry, providerUsed, cliSessionId);
-      }
+  cronSession.sessionEntry.modelProvider = providerUsed;
+  cronSession.sessionEntry.model = modelUsed;
+  cronSession.sessionEntry.contextTokens = contextTokens;
+  if (isCliProvider(providerUsed, cfgWithAgentDefaults)) {
+    const cliSessionId = runResult.meta.agentMeta?.sessionId?.trim();
+    if (cliSessionId) {
+      setCliSessionId(cronSession.sessionEntry, providerUsed, cliSessionId);
     }
-    if (hasNonzeroUsage(usage)) {
-      const input = usage.input ?? 0;
-      const output = usage.output ?? 0;
-      cronSession.sessionEntry.inputTokens = input;
-      cronSession.sessionEntry.outputTokens = output;
-      cronSession.sessionEntry.totalTokens =
-        deriveSessionTotalTokens({
-          usage,
-          contextTokens,
-        }) ?? input;
-    }
-    await persistSessionEntry();
   }
+  if (hasNonzeroUsage(usage)) {
+    const input = usage.input ?? 0;
+    const output = usage.output ?? 0;
+    cronSession.sessionEntry.inputTokens = input;
+    cronSession.sessionEntry.outputTokens = output;
+    cronSession.sessionEntry.totalTokens =
+      deriveSessionTotalTokens({
+        usage,
+        contextTokens,
+      }) ?? input;
+  }
+  await persistSessionEntry();
 
   // Emit run.completed diagnostic event for MLflow trace attributes
   const completion = payloads
     .map((p) => p.text?.trim())
     .filter(Boolean)
     .join("\n");
-
-  const usage = runResult.meta.agentMeta?.usage;
-  const modelUsed = runResult.meta.agentMeta?.model ?? fallbackModel ?? model;
-  const providerUsed = runResult.meta.agentMeta?.provider ?? fallbackProvider ?? provider;
-  const contextTokens =
-    agentCfg?.contextTokens ?? lookupContextTokens(modelUsed) ?? DEFAULT_CONTEXT_TOKENS;
 
   emitDiagnosticEvent({
     type: "run.completed",

@@ -343,13 +343,15 @@ export function startDiagnosticHeartbeat() {
 
     // Check for stuck sessions and clean up stale entries
     const SESSION_STUCK_THRESHOLD_MS = 120_000; // 2 minutes
-    const SESSION_CLEANUP_THRESHOLD_MS = 600_000; // 10 minutes
+    // Configurable cleanup threshold (default 10 minutes)
+    const SESSION_CLEANUP_THRESHOLD_MS =
+      parseInt(process.env.OPENCLAW_SESSION_CLEANUP_THRESHOLD_MS ?? "", 10) || 600_000;
     const keysToDelete: string[] = [];
 
     for (const [key, state] of sessionStates) {
       const ageMs = now - state.lastActivity;
 
-      // Clean up sessions idle for over 10 minutes
+      // Clean up sessions idle for over threshold (default 10 minutes, configurable via OPENCLAW_SESSION_CLEANUP_THRESHOLD_MS)
       if (ageMs > SESSION_CLEANUP_THRESHOLD_MS) {
         keysToDelete.push(key);
         continue;

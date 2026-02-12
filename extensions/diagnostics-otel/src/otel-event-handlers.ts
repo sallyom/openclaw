@@ -9,7 +9,7 @@ import {
 } from "@opentelemetry/api";
 import type { OtelMetricInstruments } from "./otel-metrics.js";
 import type { ActiveTrace } from "./otel-utils.js";
-import { mapProviderName } from "./otel-utils.js";
+import { formatTraceparent, mapProviderName } from "./otel-utils.js";
 
 export type AgentInfo = {
   id: string;
@@ -119,8 +119,9 @@ export function recordRunCompleted(
   }
 
   // Check for active trace (root message span created by message.queued)
-  const activeTrace = evt.sessionKey ? hctx.activeTraces.get(evt.sessionKey) : null;
-  if (activeTrace) {
+  const sessionKey = evt.sessionKey;
+  const activeTrace = sessionKey ? hctx.activeTraces.get(sessionKey) : null;
+  if (activeTrace && sessionKey) {
     // CRITICAL: MLflow UI populates Request/Response columns from ROOT SPAN attributes
     // Set prompt/completion on root span for MLflow compatibility
     if (evt.prompt) {
@@ -137,11 +138,9 @@ export function recordRunCompleted(
         JSON.stringify({ role: "assistant", content: evt.completion }),
       );
     }
-    if (evt.sessionKey) {
-      activeTrace.span.setAttribute(hctx.TRACE_ATTRS.MLFLOW_TRACE_SESSION, evt.sessionKey);
-      const agentId = evt.sessionKey.split(":")[1] || "unknown";
-      activeTrace.span.setAttribute(hctx.TRACE_ATTRS.MLFLOW_TRACE_USER, agentId);
-    }
+    activeTrace.span.setAttribute(hctx.TRACE_ATTRS.MLFLOW_TRACE_SESSION, sessionKey);
+    const agentId = sessionKey.split(":")[1] || "unknown";
+    activeTrace.span.setAttribute(hctx.TRACE_ATTRS.MLFLOW_TRACE_USER, agentId);
   }
 
   // Only put lightweight envelope attributes on the agent.turn span.
@@ -598,11 +597,8 @@ export function recordMessageQueued(
     // Store W3C trace headers for propagation
     const spanContext = rootSpan.spanContext();
     if (spanContext.traceId && spanContext.spanId) {
-      const traceparent = `00-${spanContext.traceId}-${spanContext.spanId}-${spanContext.traceFlags
-        .toString(16)
-        .padStart(2, "0")}`;
       hctx.getTraceHeadersRegistry().set(evt.sessionKey, {
-        traceparent,
+        traceparent: formatTraceparent(spanContext),
         ...(spanContext.traceState && { tracestate: spanContext.traceState.serialize() }),
       });
     }
