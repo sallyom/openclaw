@@ -59,7 +59,9 @@ import {
   emitAgentEvent,
   registerAgentRunContext,
 } from "../infra/agent-events.js";
+import { emitDiagnosticEvent, isDiagnosticsEnabled } from "../infra/diagnostic-events.js";
 import { getRemoteSkillEligibility } from "../infra/skills-remote.js";
+import { logMessageQueued, logMessageProcessed } from "../logging/diagnostic.js";
 import { normalizeAgentId } from "../routing/session-key.js";
 import { defaultRuntime, type RuntimeEnv } from "../runtime.js";
 import { applyVerboseOverride } from "../sessions/level-overrides.js";
@@ -332,6 +334,10 @@ export async function agentCommand(
         sessionKey,
       })
     : null;
+  const diagnosticsEnabled = isDiagnosticsEnabled(cfg);
+  const diagStartedAt = Date.now();
+  let agentCommandOutcome: "completed" | "error" = "completed";
+  let agentCommandError: string | undefined;
 
   try {
     if (opts.deliver === true) {
@@ -479,6 +485,14 @@ export async function agentCommand(
       registerAgentRunContext(runId, {
         sessionKey,
         verboseLevel: resolvedVerboseLevel,
+      });
+    }
+    if (diagnosticsEnabled && sessionKey) {
+      logMessageQueued({
+        sessionId,
+        sessionKey,
+        channel: resolveMessageChannel(opts.replyChannel, opts.channel),
+        source: "agent-command",
       });
     }
 
@@ -758,6 +772,30 @@ export async function agentCommand(
       result = fallbackResult.result;
       fallbackProvider = fallbackResult.provider;
       fallbackModel = fallbackResult.model;
+      if (diagnosticsEnabled) {
+        const agentMeta = result.meta.agentMeta;
+        const usage = agentMeta?.usage;
+        emitDiagnosticEvent({
+          type: "run.completed",
+          runId,
+          sessionKey,
+          sessionId,
+          channel: resolveMessageChannel(opts.replyChannel, opts.channel),
+          provider: agentMeta?.provider ?? fallbackProvider,
+          model: agentMeta?.model ?? fallbackModel,
+          usage: {
+            input: usage?.input,
+            output: usage?.output,
+            cacheRead: usage?.cacheRead,
+            cacheWrite: usage?.cacheWrite,
+            total: usage?.total,
+          },
+          durationMs: Date.now() - startedAt,
+          operationName: "chat",
+          error: result.meta.error?.message,
+          errorType: result.meta.error?.kind,
+        });
+      }
       if (!lifecycleEnded) {
         emitAgentEvent({
           runId,
@@ -771,6 +809,24 @@ export async function agentCommand(
         });
       }
     } catch (err) {
+      agentCommandOutcome = "error";
+      agentCommandError = String(err);
+      if (diagnosticsEnabled) {
+        emitDiagnosticEvent({
+          type: "run.completed",
+          runId,
+          sessionKey,
+          sessionId,
+          channel: resolveMessageChannel(opts.replyChannel, opts.channel),
+          provider: fallbackProvider,
+          model: fallbackModel,
+          usage: {},
+          durationMs: Date.now() - startedAt,
+          operationName: "chat",
+          error: String(err),
+          errorType: "exception",
+        });
+      }
       if (!lifecycleEnded) {
         emitAgentEvent({
           runId,
@@ -814,6 +870,16 @@ export async function agentCommand(
       payloads,
     });
   } finally {
+    if (diagnosticsEnabled && sessionKey) {
+      logMessageProcessed({
+        channel: resolveMessageChannel(opts.replyChannel, opts.channel) ?? "agent-command",
+        sessionId,
+        sessionKey,
+        durationMs: Date.now() - diagStartedAt,
+        outcome: agentCommandOutcome,
+        error: agentCommandError,
+      });
+    }
     clearAgentRunContext(runId);
   }
 }
