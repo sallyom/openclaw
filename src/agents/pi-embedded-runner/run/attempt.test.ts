@@ -1,7 +1,8 @@
 import type { AgentMessage } from "@mariozechner/pi-agent-core";
 import type { ImageContent } from "@mariozechner/pi-ai";
 import { describe, expect, it, vi } from "vitest";
-import { injectHistoryImagesIntoMessages, resolvePromptBuildHookResult } from "./attempt.js";
+import { injectHistoryImagesIntoMessages } from "./images.js";
+import { resolvePromptBuildHookResult } from "./attempt.js";
 
 describe("injectHistoryImagesIntoMessages", () => {
   const image: ImageContent = { type: "image", data: "abc", mimeType: "image/png" };
