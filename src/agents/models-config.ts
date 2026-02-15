@@ -6,6 +6,7 @@ import { resolveOpenClawAgentDir } from "./agent-paths.js";
 import {
   normalizeProviders,
   type ProviderConfig,
+  resolveImplicitAnthropicVertexProvider,
   resolveImplicitBedrockProvider,
   resolveImplicitCopilotProvider,
   resolveImplicitProviders,
@@ -97,6 +98,13 @@ export async function ensureOpenClawModelsJson(
     providers["amazon-bedrock"] = existing
       ? mergeProviderModels(implicitBedrock, existing)
       : implicitBedrock;
+  }
+  const implicitAnthropicVertex = resolveImplicitAnthropicVertexProvider({});
+  if (implicitAnthropicVertex) {
+    const existing = providers["anthropic-vertex"];
+    providers["anthropic-vertex"] = existing
+      ? mergeProviderModels(implicitAnthropicVertex, existing)
+      : implicitAnthropicVertex;
   }
   const implicitCopilot = await resolveImplicitCopilotProvider({ agentDir });
   if (implicitCopilot && !providers["github-copilot"]) {

@@ -1015,6 +1015,56 @@ export async function resolveImplicitCopilotProvider(params: {
   } satisfies ProviderConfig;
 }
 
+// ── Anthropic Vertex AI (Claude models via GCP) ─────────────────────────────
+
+const ANTHROPIC_VERTEX_MODELS: ModelDefinitionConfig[] = [
+  {
+    id: "claude-sonnet-4-5",
+    name: "Claude Sonnet 4.5",
+    reasoning: true,
+    input: ["text", "image"],
+    cost: { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 },
+    contextWindow: 200000,
+    maxTokens: 16384,
+  },
+  {
+    id: "claude-opus-4-5",
+    name: "Claude Opus 4.5",
+    reasoning: true,
+    input: ["text", "image"],
+    cost: { input: 15, output: 75, cacheRead: 1.5, cacheWrite: 18.75 },
+    contextWindow: 200000,
+    maxTokens: 32000,
+  },
+  {
+    id: "claude-haiku-3-5",
+    name: "Claude Haiku 3.5",
+    reasoning: false,
+    input: ["text", "image"],
+    cost: { input: 0.8, output: 4, cacheRead: 0.08, cacheWrite: 1 },
+    contextWindow: 200000,
+    maxTokens: 8192,
+  },
+];
+
+export function resolveImplicitAnthropicVertexProvider(params: {
+  env?: NodeJS.ProcessEnv;
+}): ProviderConfig | null {
+  const env = params.env ?? process.env;
+  const project = env.GOOGLE_CLOUD_PROJECT?.trim() || env.ANTHROPIC_VERTEX_PROJECT_ID?.trim();
+  const location = env.GOOGLE_CLOUD_LOCATION?.trim() || env.CLOUD_ML_REGION?.trim();
+
+  if (!project || !location) {
+    return null;
+  }
+
+  return {
+    baseUrl: `https://${location}-aiplatform.googleapis.com`,
+    api: "anthropic-messages",
+    models: ANTHROPIC_VERTEX_MODELS,
+  } satisfies ProviderConfig;
+}
+
 export async function resolveImplicitBedrockProvider(params: {
   agentDir: string;
   config?: OpenClawConfig;
