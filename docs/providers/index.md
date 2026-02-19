@@ -47,6 +47,7 @@ See [Venice AI](/providers/venice).
 - [Mistral](/providers/mistral)
 - [OpenCode Zen](/providers/opencode)
 - [Amazon Bedrock](/providers/bedrock)
+- [Anthropic Vertex AI (Claude via GCP)](/providers/anthropic-vertex)
 - [Z.AI](/providers/zai)
 - [Xiaomi](/providers/xiaomi)
 - [GLM models](/providers/glm)
