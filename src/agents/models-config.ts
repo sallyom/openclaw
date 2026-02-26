@@ -82,6 +82,7 @@ export async function ensureOpenClawModelsJson(
 ): Promise<{ agentDir: string; wrote: boolean }> {
   const cfg = resolveModelsConfigInput(config);
   const agentDir = agentDirOverride?.trim() ? agentDirOverride.trim() : resolveOpenClawAgentDir();
+
   const targetPath = path.join(agentDir, "models.json");
 
   return await withModelsJsonWriteLock(targetPath, async () => {
