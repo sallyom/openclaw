@@ -144,6 +144,7 @@ export type ToolHandlerParams = Pick<
   | "sessionKey"
   | "sessionId"
   | "channel"
+  | "agentId"
   | "onBlockReplyFlush"
   | "onAgentEvent"
   | "onToolResult"
