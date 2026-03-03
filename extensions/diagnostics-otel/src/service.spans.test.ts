@@ -71,11 +71,23 @@ vi.mock("@opentelemetry/exporter-metrics-otlp-http", () => ({
   OTLPMetricExporter: class {},
 }));
 
+vi.mock("@opentelemetry/exporter-metrics-otlp-proto", () => ({
+  OTLPMetricExporter: class {},
+}));
+
 vi.mock("@opentelemetry/exporter-trace-otlp-http", () => ({
   OTLPTraceExporter: class {},
 }));
 
+vi.mock("@opentelemetry/exporter-trace-otlp-proto", () => ({
+  OTLPTraceExporter: class {},
+}));
+
 vi.mock("@opentelemetry/exporter-logs-otlp-http", () => ({
+  OTLPLogExporter: class {},
+}));
+
+vi.mock("@opentelemetry/exporter-logs-otlp-proto", () => ({
   OTLPLogExporter: class {},
 }));
 
@@ -108,9 +120,7 @@ vi.mock("@opentelemetry/resources", () => ({
 }));
 
 vi.mock("@opentelemetry/semantic-conventions", () => ({
-  SemanticResourceAttributes: {
-    SERVICE_NAME: "service.name",
-  },
+  ATTR_SERVICE_NAME: "service.name",
 }));
 
 vi.mock("openclaw/plugin-sdk", async () => {

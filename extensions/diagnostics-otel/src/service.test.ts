@@ -72,6 +72,10 @@ vi.mock("@opentelemetry/exporter-metrics-otlp-http", () => ({
   OTLPMetricExporter: class {},
 }));
 
+vi.mock("@opentelemetry/exporter-metrics-otlp-proto", () => ({
+  OTLPMetricExporter: class {},
+}));
+
 vi.mock("@opentelemetry/exporter-trace-otlp-http", () => ({
   OTLPTraceExporter: class {
     constructor(options?: unknown) {
@@ -80,7 +84,19 @@ vi.mock("@opentelemetry/exporter-trace-otlp-http", () => ({
   },
 }));
 
+vi.mock("@opentelemetry/exporter-trace-otlp-proto", () => ({
+  OTLPTraceExporter: class {
+    constructor(options?: unknown) {
+      traceExporterCtor(options);
+    }
+  },
+}));
+
 vi.mock("@opentelemetry/exporter-logs-otlp-http", () => ({
+  OTLPLogExporter: class {},
+}));
+
+vi.mock("@opentelemetry/exporter-logs-otlp-proto", () => ({
   OTLPLogExporter: class {},
 }));
 
@@ -206,7 +222,6 @@ describe("diagnostics-otel service – content capture & tools", () => {
       await Promise.resolve(service.stop?.({} as never)).catch(() => undefined);
     }
   });
-
 
   beforeEach(() => {
     telemetryState.counters.clear();

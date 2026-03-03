@@ -1,9 +1,3 @@
-import type { SeverityNumber } from "@opentelemetry/api-logs";
-import type {
-  DiagnosticEventPayload,
-  OpenClawConfig,
-  OpenClawPluginService,
-} from "openclaw/plugin-sdk";
 import {
   context,
   isSpanContextValid,
@@ -13,15 +7,18 @@ import {
   SpanStatusCode,
   type Span,
 } from "@opentelemetry/api";
-import { OTLPLogExporter } from "@opentelemetry/exporter-logs-otlp-http";
-import { OTLPMetricExporter } from "@opentelemetry/exporter-metrics-otlp-http";
-import { OTLPTraceExporter } from "@opentelemetry/exporter-trace-otlp-http";
+import type { SeverityNumber } from "@opentelemetry/api-logs";
 import { resourceFromAttributes } from "@opentelemetry/resources";
 import { BatchLogRecordProcessor, LoggerProvider } from "@opentelemetry/sdk-logs";
 import { PeriodicExportingMetricReader } from "@opentelemetry/sdk-metrics";
 import { NodeSDK } from "@opentelemetry/sdk-node";
 import { ParentBasedSampler, TraceIdRatioBasedSampler } from "@opentelemetry/sdk-trace-base";
 import { ATTR_SERVICE_NAME } from "@opentelemetry/semantic-conventions";
+import type {
+  DiagnosticEventPayload,
+  OpenClawConfig,
+  OpenClawPluginService,
+} from "openclaw/plugin-sdk";
 import { resolveAgentIdFromSessionKey, resolveAgentIdentity } from "openclaw/plugin-sdk";
 import { onDiagnosticEvent, redactSensitiveText, registerLogTransport } from "openclaw/plugin-sdk";
 import {
@@ -88,6 +85,25 @@ function formatError(err: unknown): string {
   }
 }
 
+type OtlpProtocol = "http/protobuf" | "http/json";
+
+async function loadExporters(protocol: OtlpProtocol) {
+  if (protocol === "http/json") {
+    const [{ OTLPTraceExporter }, { OTLPMetricExporter }, { OTLPLogExporter }] = await Promise.all([
+      import("@opentelemetry/exporter-trace-otlp-http"),
+      import("@opentelemetry/exporter-metrics-otlp-http"),
+      import("@opentelemetry/exporter-logs-otlp-http"),
+    ]);
+    return { OTLPTraceExporter, OTLPMetricExporter, OTLPLogExporter };
+  }
+  const [{ OTLPTraceExporter }, { OTLPMetricExporter }, { OTLPLogExporter }] = await Promise.all([
+    import("@opentelemetry/exporter-trace-otlp-proto"),
+    import("@opentelemetry/exporter-metrics-otlp-proto"),
+    import("@opentelemetry/exporter-logs-otlp-proto"),
+  ]);
+  return { OTLPTraceExporter, OTLPMetricExporter, OTLPLogExporter };
+}
+
 function redactOtelAttributes(attributes: Record<string, string | number | boolean>) {
   const redactedAttributes: Record<string, string | number | boolean> = {};
   for (const [key, value] of Object.entries(attributes)) {
@@ -118,10 +134,13 @@ export function createDiagnosticsOtelService(): OpenClawPluginService {
       }
 
       const protocol = otel.protocol ?? process.env.OTEL_EXPORTER_OTLP_PROTOCOL ?? "http/protobuf";
-      if (protocol !== "http/protobuf") {
+      if (protocol !== "http/protobuf" && protocol !== "http/json") {
         ctx.logger.warn(`diagnostics-otel: unsupported protocol ${protocol}`);
         return;
       }
+
+      const { OTLPTraceExporter, OTLPMetricExporter, OTLPLogExporter } =
+        await loadExporters(protocol);
 
       const endpoint = normalizeEndpoint(otel.endpoint ?? process.env.OTEL_EXPORTER_OTLP_ENDPOINT);
       const headers = otel.headers ?? undefined;
@@ -672,7 +691,7 @@ export function createDiagnosticsOtelService(): OpenClawPluginService {
       });
 
       if (logsEnabled) {
-        ctx.logger.info("diagnostics-otel: logs exporter enabled (OTLP/Protobuf)");
+        ctx.logger.info(`diagnostics-otel: logs exporter enabled (${protocol})`);
       }
     },
     async stop(_ctx) {
