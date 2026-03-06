@@ -41,6 +41,9 @@ jobs:
           docker build -t openclaw-dockerfile-smoke:local -f Dockerfile .
           docker run --rm --entrypoint sh openclaw-dockerfile-smoke:local -lc 'which openclaw && openclaw --version'
 
+      # This smoke only validates that the build-arg path preinstalls selected
+      # extension deps without breaking image build or basic CLI startup. It
+      # does not exercise runtime loading/registration of diagnostics-otel.
       - name: Smoke test Dockerfile with extension build arg
         run: |
           docker build \
