@@ -1,4 +1,5 @@
 import type { OpenClawConfig } from "../config/config.js";
+import type { ModelDefinitionConfig } from "../config/types.js";
 import { coerceSecretRef, resolveSecretInputRef } from "../config/types.secrets.js";
 import { isRecord } from "../utils.js";
 import { normalizeOptionalSecretInput } from "../utils/normalize-secret-input.js";
@@ -731,7 +732,63 @@ export async function resolveImplicitProviders(
       : implicitBedrock;
   }
 
+  const implicitAnthropicVertex = resolveImplicitAnthropicVertexProvider({ env });
+  if (implicitAnthropicVertex && !providers["anthropic-vertex"]) {
+    providers["anthropic-vertex"] = implicitAnthropicVertex;
+  }
+
   return providers;
+}
+
+// ── Anthropic Vertex AI (Claude models via GCP) ─────────────────────────────
+
+const ANTHROPIC_VERTEX_MODELS: ModelDefinitionConfig[] = [
+  {
+    id: "claude-opus-4-6",
+    name: "Claude Opus 4.6",
+    reasoning: true,
+    input: ["text", "image"],
+    cost: { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25 },
+    contextWindow: 200000,
+    maxTokens: 128000,
+  },
+  {
+    id: "claude-sonnet-4-6",
+    name: "Claude Sonnet 4.6",
+    reasoning: true,
+    input: ["text", "image"],
+    cost: { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 },
+    contextWindow: 200000,
+    maxTokens: 64000,
+  },
+  {
+    id: "claude-haiku-4-5-20251001",
+    name: "Claude Haiku 4.5",
+    reasoning: true,
+    input: ["text", "image"],
+    cost: { input: 1, output: 5, cacheRead: 0.1, cacheWrite: 1.25 },
+    contextWindow: 200000,
+    maxTokens: 64000,
+  },
+];
+
+export function resolveImplicitAnthropicVertexProvider(params: {
+  env?: NodeJS.ProcessEnv;
+}): ProviderConfig | null {
+  const env = params.env ?? process.env;
+  const hasProject = env.GOOGLE_CLOUD_PROJECT?.trim() || env.ANTHROPIC_VERTEX_PROJECT_ID?.trim();
+  if (!hasProject) {
+    return null;
+  }
+
+  const region = env.GOOGLE_CLOUD_LOCATION?.trim() || env.CLOUD_ML_REGION?.trim() || "us-central1";
+
+  return {
+    baseUrl: `https://${region}-aiplatform.googleapis.com`,
+    api: "anthropic-messages",
+    apiKey: "gcp-vertex-credentials", // pragma: allowlist secret
+    models: ANTHROPIC_VERTEX_MODELS,
+  } satisfies ProviderConfig;
 }
 
 export async function resolveImplicitBedrockProvider(params: {
