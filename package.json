@@ -383,7 +383,7 @@
     "@line/bot-sdk": "^10.6.0",
     "@lydell/node-pty": "1.2.0-beta.3",
     "@mariozechner/pi-agent-core": "0.58.0",
-    "@mariozechner/pi-ai": "0.58.0",
+    "@mariozechner/pi-ai": "file:mariozechner-pi-ai-0.58.1.tgz",
     "@mariozechner/pi-coding-agent": "0.58.0",
     "@mariozechner/pi-tui": "0.58.0",
     "@modelcontextprotocol/sdk": "1.27.1",
@@ -467,6 +467,7 @@
   "pnpm": {
     "minimumReleaseAge": 2880,
     "overrides": {
+      "@mariozechner/pi-ai": "file:mariozechner-pi-ai-0.58.1.tgz",
       "hono": "4.12.7",
       "@hono/node-server": "1.19.10",
       "fast-xml-parser": "5.3.8",

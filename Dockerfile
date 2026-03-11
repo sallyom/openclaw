@@ -58,6 +58,8 @@ RUN corepack enable
 WORKDIR /app
 
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml .npmrc ./
+# Temp: local pi-ai .tgz with client injection (remove when pi-mono PR lands)
+COPY mariozechner-pi-ai-0.58.1.tgz ./
 COPY ui/package.json ./ui/package.json
 COPY patches ./patches
 
