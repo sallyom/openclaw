@@ -82,7 +82,12 @@ export function evaluateMissingDeviceIdentity(params: {
   if (params.isControlUi && params.trustedProxyAuthOk) {
     return { kind: "allow" };
   }
-  if (params.isControlUi && params.role === "operator" && params.controlUiAuthPolicy.allowBypass) {
+  if (params.isControlUi && params.controlUiAuthPolicy.allowBypass && params.role === "operator") {
+    // dangerouslyDisableDeviceAuth: true — operator has explicitly opted out of
+    // device-identity enforcement for this Control UI.  Allow for operator-role
+    // sessions only; node-role sessions must still satisfy device identity so
+    // that the break-glass flag cannot be abused to admit device-less node
+    // registrations (see #45405 review).
     return { kind: "allow" };
   }
   if (params.isControlUi && !params.controlUiAuthPolicy.allowBypass) {

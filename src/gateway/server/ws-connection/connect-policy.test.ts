@@ -188,6 +188,12 @@ describe("ws connect policy", () => {
         isLocalClient: false,
       }).kind,
     ).toBe("allow");
+
+    // Regression: dangerouslyDisableDeviceAuth bypass must NOT extend to node-role
+    // sessions — the break-glass flag is scoped to operator Control UI only.
+    // A device-less node-role connection must still be rejected even when the flag
+    // is set, to prevent the flag from being abused to admit unauthorized node
+    // registrations.
     expect(
       evaluateMissingDeviceIdentity({
         hasDeviceIdentity: false,
