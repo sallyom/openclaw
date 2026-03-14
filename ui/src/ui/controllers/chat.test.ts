@@ -576,6 +576,7 @@ describe("sendChatMessage", () => {
 
 describe("abortChatRun", () => {
   it("formats structured non-auth connect failures for chat abort", async () => {
+    // Abort now shares the same structured connect-error formatter as send.
     const request = vi.fn().mockRejectedValue(
       new GatewayRequestError({
         code: "INVALID_REQUEST",
