@@ -287,6 +287,21 @@ export function resolveConfiguredModelRef(params: {
         return aliasMatch.ref;
       }
 
+      // Look up which configured provider actually offers this model before
+      // falling back to the hardcoded "anthropic" default.
+      const configuredProviders = params.cfg.models?.providers;
+      if (configuredProviders && typeof configuredProviders === "object") {
+        for (const [providerName, providerCfg] of Object.entries(configuredProviders)) {
+          if (
+            providerCfg &&
+            Array.isArray(providerCfg.models) &&
+            providerCfg.models.some((m) => m.id === trimmed)
+          ) {
+            return { provider: providerName, model: trimmed };
+          }
+        }
+      }
+
       // Default to anthropic if no provider is specified, but warn as this is deprecated.
       const safeTrimmed = sanitizeForLog(trimmed);
       log.warn(
