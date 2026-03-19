@@ -1,0 +1,150 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://claw.dev/specs/channel-envelope.schema.json",
+  "title": "Claw Channel Envelope",
+  "type": "object",
+  "additionalProperties": true,
+  "required": ["specVersion", "eventType", "message"],
+  "properties": {
+    "specVersion": {
+      "const": "claw.channel.v1"
+    },
+    "eventType": {
+      "type": "string",
+      "enum": [
+        "message.inbound",
+        "message.outbound",
+        "message.update",
+        "message.typing.start",
+        "message.typing.stop",
+        "message.reaction.add",
+        "message.reaction.remove",
+        "message.pin",
+        "message.unpin",
+        "message.delivery"
+      ]
+    },
+    "message": {
+      "$ref": "#/$defs/message"
+    },
+    "context": {
+      "$ref": "#/$defs/context"
+    }
+  },
+  "$defs": {
+    "message": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "channel", "timestamp"],
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "channel": {
+          "type": "string"
+        },
+        "sender": {
+          "$ref": "#/$defs/party"
+        },
+        "recipient": {
+          "$ref": "#/$defs/party"
+        },
+        "replyTarget": {
+          "type": "string"
+        },
+        "threadId": {
+          "type": ["string", "null"]
+        },
+        "content": {
+          "type": "string"
+        },
+        "subject": {
+          "type": ["string", "null"]
+        },
+        "timestamp": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "attachments": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/attachment"
+          }
+        },
+        "delivery": {
+          "$ref": "#/$defs/delivery"
+        }
+      }
+    },
+    "party": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "displayName": {
+          "type": "string"
+        },
+        "kind": {
+          "type": "string",
+          "enum": ["user", "group", "channel", "bot", "system"]
+        }
+      }
+    },
+    "attachment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id"],
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "mediaType": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "url": {
+          "type": "string"
+        },
+        "sizeBytes": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "delivery": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "status": {
+          "type": "string",
+          "enum": ["pending", "sent", "delivered", "read", "failed"]
+        },
+        "error": {
+          "type": "string"
+        }
+      }
+    },
+    "context": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "supportsDraftUpdates": {
+          "type": "boolean"
+        },
+        "supportsTyping": {
+          "type": "boolean"
+        },
+        "supportsReactions": {
+          "type": "boolean"
+        },
+        "supportsPinning": {
+          "type": "boolean"
+        }
+      }
+    }
+  }
+}

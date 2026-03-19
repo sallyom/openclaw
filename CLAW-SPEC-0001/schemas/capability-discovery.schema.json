@@ -1,0 +1,109 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://claw.dev/specs/capability-discovery.schema.json",
+  "title": "Claw Capability Discovery",
+  "type": "object",
+  "additionalProperties": true,
+  "required": ["kind", "name", "role", "specs"],
+  "properties": {
+    "kind": {
+      "const": "claw.discovery"
+    },
+    "specVersion": {
+      "const": "claw.discovery.v1"
+    },
+    "name": {
+      "type": "string"
+    },
+    "version": {
+      "type": "string"
+    },
+    "role": {
+      "type": "string",
+      "enum": ["host", "client", "extension", "channel"]
+    },
+    "specs": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "string"
+      }
+    },
+    "features": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "limits": {
+      "type": "object",
+      "additionalProperties": {
+        "type": ["string", "number", "boolean"]
+      }
+    },
+    "bridges": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "acp": {
+          "$ref": "#/$defs/bridge"
+        },
+        "mcp": {
+          "$ref": "#/$defs/bridge"
+        }
+      }
+    },
+    "artifacts": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "skills": {
+          "$ref": "#/$defs/artifactSupport"
+        },
+        "extensions": {
+          "$ref": "#/$defs/artifactSupport"
+        },
+        "channels": {
+          "$ref": "#/$defs/artifactSupport"
+        }
+      }
+    },
+    "metadata": {
+      "type": "object"
+    }
+  },
+  "$defs": {
+    "bridge": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["supported"],
+      "properties": {
+        "supported": {
+          "type": "boolean"
+        },
+        "versions": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "artifactSupport": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["supported"],
+      "properties": {
+        "supported": {
+          "type": "boolean"
+        },
+        "specs": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    }
+  }
+}
