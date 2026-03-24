@@ -267,9 +267,21 @@ describe("OpenResponses HTTP API (e2e)", () => {
       expect(resChannelHeader.status).toBe(200);
       const optsChannelHeader = (agentCommand.mock.calls[0] as unknown[] | undefined)?.[0];
       expect((optsChannelHeader as { messageChannel?: string } | undefined)?.messageChannel).toBe(
-        "webchat",
+        "custom-client-channel",
       );
       await ensureResponseConsumed(resChannelHeader);
+
+      mockAgentOnce([{ text: "hello" }]);
+      const resModelOverride = await postResponses(port, {
+        model: "openai/text-embedding-3-small",
+        input: "hi",
+      });
+      expect(resModelOverride.status).toBe(200);
+      const optsModelOverride = (agentCommand.mock.calls[0] as unknown[] | undefined)?.[0];
+      expect((optsModelOverride as { model?: string } | undefined)?.model).toBe(
+        "openai/text-embedding-3-small",
+      );
+      await ensureResponseConsumed(resModelOverride);
 
       mockAgentOnce([{ text: "hello" }]);
       const resUser = await postResponses(port, {

@@ -35,7 +35,11 @@ import type { AuthRateLimiter } from "./auth-rate-limit.js";
 import type { ResolvedGatewayAuth } from "./auth.js";
 import { sendJson, setSseHeaders, writeDone } from "./http-common.js";
 import { handleGatewayPostJsonEndpoint } from "./http-endpoint-helpers.js";
-import { getHeader, resolveGatewayRequestContext } from "./http-utils.js";
+import {
+  getHeader,
+  resolveGatewayRequestContext,
+  resolveOpenAiCompatModelOverride,
+} from "./http-utils.js";
 import { normalizeInputHostnameAllowlist } from "./input-allowlist.js";
 import {
   CreateResponseBodySchema,
@@ -387,6 +391,7 @@ async function runResponsesAgentCommand(params: {
   images: ImageContent[];
   clientTools: ClientToolDefinition[];
   extraSystemPrompt: string;
+  modelOverride?: string;
   streamParams: { maxTokens: number } | undefined;
   sessionKey: string;
   runId: string;
@@ -399,6 +404,7 @@ async function runResponsesAgentCommand(params: {
       images: params.images.length > 0 ? params.images : undefined,
       clientTools: params.clientTools.length > 0 ? params.clientTools : undefined,
       extraSystemPrompt: params.extraSystemPrompt || undefined,
+      model: params.modelOverride,
       streamParams: params.streamParams ?? undefined,
       sessionKey: params.sessionKey,
       runId: params.runId,
@@ -455,6 +461,7 @@ export async function handleOpenResponsesHttpRequest(
   const stream = Boolean(payload.stream);
   const model = payload.model;
   const user = payload.user;
+  const modelOverride = resolveOpenAiCompatModelOverride(model);
 
   // Extract images + files from input (Phase 2)
   let images: ImageContent[] = [];
@@ -593,7 +600,7 @@ export async function handleOpenResponsesHttpRequest(
     user,
     sessionPrefix: "openresponses",
     defaultMessageChannel: "webchat",
-    useMessageChannelHeader: false,
+    useMessageChannelHeader: true,
   });
   const responseSessionScope = createResponseSessionScope({
     req,
@@ -652,6 +659,7 @@ export async function handleOpenResponsesHttpRequest(
         images,
         clientTools: resolvedClientTools,
         extraSystemPrompt,
+        modelOverride,
         streamParams,
         sessionKey,
         runId: responseId,
@@ -903,6 +911,7 @@ export async function handleOpenResponsesHttpRequest(
         images,
         clientTools: resolvedClientTools,
         extraSystemPrompt,
+        modelOverride,
         streamParams,
         sessionKey,
         runId: responseId,

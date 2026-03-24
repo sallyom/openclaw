@@ -247,6 +247,18 @@ describe("OpenAI-compatible HTTP API (e2e)", () => {
       {
         mockAgentOnce([{ text: "hello" }]);
         const res = await postChatCompletions(port, {
+          model: "openai/gpt-5.4",
+          messages: [{ role: "user", content: "hi" }],
+        });
+        expect(res.status).toBe(200);
+        const opts = (agentCommand.mock.calls[0] as unknown[] | undefined)?.[0];
+        expect((opts as { model?: string } | undefined)?.model).toBe("openai/gpt-5.4");
+        await res.text();
+      }
+
+      {
+        mockAgentOnce([{ text: "hello" }]);
+        const res = await postChatCompletions(port, {
           model: "openclaw",
           messages: [
             {

@@ -50,6 +50,20 @@ export function resolveAgentIdFromModel(model: string | undefined): string | und
   return normalizeAgentId(agentId);
 }
 
+export function resolveOpenAiCompatModelOverride(model: string | undefined): string | undefined {
+  const raw = model?.trim();
+  if (!raw) {
+    return undefined;
+  }
+  if (raw.toLowerCase() === "openclaw") {
+    return undefined;
+  }
+  if (resolveAgentIdFromModel(raw)) {
+    return undefined;
+  }
+  return raw;
+}
+
 export function resolveAgentIdForRequest(params: {
   req: IncomingMessage;
   model: string | undefined;
