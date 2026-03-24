@@ -1,5 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { IncomingMessage } from "node:http";
+import { resolveDefaultAgentId } from "../agents/agent-scope.js";
+import { loadConfig } from "../config/config.js";
 import { buildAgentMainSessionKey, normalizeAgentId } from "../routing/session-key.js";
 import { normalizeMessageChannel } from "../utils/message-channel.js";
 
@@ -74,7 +76,11 @@ export function resolveAgentIdForRequest(params: {
   }
 
   const fromModel = resolveAgentIdFromModel(params.model);
-  return fromModel ?? "main";
+  if (fromModel) {
+    return fromModel;
+  }
+
+  return normalizeAgentId(resolveDefaultAgentId(loadConfig()));
 }
 
 export function resolveSessionKey(params: {

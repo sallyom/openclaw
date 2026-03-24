@@ -1,14 +1,10 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
-import { DEFAULT_PROVIDER } from "../agents/defaults.js";
-import type { ModelCatalogEntry } from "../agents/model-catalog.js";
-import { buildAllowedModelSet, modelKey, parseModelRef } from "../agents/model-selection.js";
 import { loadConfig } from "../config/config.js";
+import { listGatewayAgentsBasic } from "./agent-list.js";
 import type { AuthRateLimiter } from "./auth-rate-limit.js";
 import type { ResolvedGatewayAuth } from "./auth.js";
 import { authorizeGatewayBearerRequestOrReply } from "./http-auth-helpers.js";
 import { sendInvalidRequest, sendJson, sendMethodNotAllowed } from "./http-common.js";
-import { resolveAgentIdForRequest } from "./http-utils.js";
-import { loadGatewayModelCatalog } from "./server-model-catalog.js";
 
 type OpenAiModelsHttpOptions = {
   auth: ResolvedGatewayAuth;
@@ -21,23 +17,21 @@ type OpenAiModelObject = {
   id: string;
   object: "model";
   created: number;
-  owned_by: string;
+  owned_by: "openclaw";
   permission: [];
-  input?: ModelCatalogEntry["input"];
-  context_window?: number;
-  reasoning?: boolean;
+  root: string;
+  parent: null;
 };
 
-function toOpenAiModel(entry: ModelCatalogEntry): OpenAiModelObject {
+function toOpenAiModel(id: string, created: number): OpenAiModelObject {
   return {
-    id: modelKey(entry.provider, entry.id),
+    id,
     object: "model",
-    created: 0,
-    owned_by: entry.provider,
+    created,
+    owned_by: "openclaw",
     permission: [],
-    ...(entry.input ? { input: entry.input } : {}),
-    ...(typeof entry.contextWindow === "number" ? { context_window: entry.contextWindow } : {}),
-    ...(typeof entry.reasoning === "boolean" ? { reasoning: entry.reasoning } : {}),
+    root: id,
+    parent: null,
   };
 }
 
@@ -56,17 +50,18 @@ async function authorizeRequest(
   });
 }
 
-async function loadAllowedCatalog(req: IncomingMessage): Promise<ModelCatalogEntry[]> {
+function loadGatewayAgentTargets(): OpenAiModelObject[] {
   const cfg = loadConfig();
-  const catalog = await loadGatewayModelCatalog();
-  const agentId = resolveAgentIdForRequest({ req, model: undefined });
-  const { allowedCatalog } = buildAllowedModelSet({
-    cfg,
-    catalog,
-    defaultProvider: DEFAULT_PROVIDER,
-    agentId,
-  });
-  return allowedCatalog.length > 0 ? allowedCatalog : catalog;
+  const { defaultId, agents } = listGatewayAgentsBasic(cfg);
+  const created = Math.floor(Date.now() / 1000);
+  const ids = new Set<string>(["openclaw"]);
+  for (const agent of agents) {
+    if (agent.id === defaultId) {
+      continue;
+    }
+    ids.add(`openclaw:${agent.id}`);
+  }
+  return [...ids].toSorted((a, b) => a.localeCompare(b)).map((id) => toOpenAiModel(id, created));
 }
 
 function resolveRequestPath(req: IncomingMessage): string {
@@ -92,11 +87,11 @@ export async function handleOpenAiModelsHttpRequest(
     return true;
   }
 
-  const catalog = await loadAllowedCatalog(req);
+  const models = loadGatewayAgentTargets();
   if (requestPath === "/v1/models") {
     sendJson(res, 200, {
       object: "list",
-      data: catalog.map(toOpenAiModel),
+      data: models,
     });
     return true;
   }
@@ -115,14 +110,13 @@ export async function handleOpenAiModelsHttpRequest(
     return true;
   }
 
-  const parsed = parseModelRef(decodedId, DEFAULT_PROVIDER);
-  if (!parsed) {
+  const normalizedId = decodedId.trim();
+  if (normalizedId !== "openclaw" && !/^openclaw:[a-z0-9][a-z0-9_-]{0,63}$/i.test(normalizedId)) {
     sendInvalidRequest(res, "Invalid model id.");
     return true;
   }
 
-  const key = modelKey(parsed.provider, parsed.model);
-  const entry = catalog.find((item) => modelKey(item.provider, item.id) === key);
+  const entry = models.find((item) => item.id === normalizedId);
   if (!entry) {
     sendJson(res, 404, {
       error: {
@@ -133,6 +127,6 @@ export async function handleOpenAiModelsHttpRequest(
     return true;
   }
 
-  sendJson(res, 200, toOpenAiModel(entry));
+  sendJson(res, 200, entry);
   return true;
 }

@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { getFreePort, installGatewayTestHooks } from "./test-helpers.js";
+import { getFreePort, installGatewayTestHooks, testState } from "./test-helpers.js";
 
 installGatewayTestHooks({ scope: "suite" });
 
@@ -37,15 +37,53 @@ async function getModels(pathname: string, headers?: Record<string, string>) {
 
 describe("OpenAI-compatible models HTTP API (e2e)", () => {
   it("serves /v1/models when compatibility endpoints are enabled", async () => {
-    const res = await getModels("/v1/models");
-    expect(res.status).toBe(200);
-    const json = (await res.json()) as { object?: string; data?: Array<{ id?: string }> };
-    expect(json.object).toBe("list");
-    expect(Array.isArray(json.data)).toBe(true);
-    expect((json.data?.length ?? 0) > 0).toBe(true);
-    expect(
-      json.data?.every((entry) => typeof entry.id === "string" && entry.id?.includes("/")),
-    ).toBe(true);
+    testState.agentsConfig = {
+      list: [
+        { id: "main", default: true, name: "Main" },
+        { id: "mercury", name: "Mercury" },
+        { id: "review", name: "Review" },
+      ],
+    };
+    try {
+      const res = await getModels("/v1/models");
+      expect(res.status).toBe(200);
+      const json = (await res.json()) as {
+        object?: string;
+        data?: Array<{ id?: string; owned_by?: string; root?: string; parent?: null }>;
+      };
+      expect(json.object).toBe("list");
+      expect(json.data).toEqual([
+        {
+          id: "openclaw",
+          object: "model",
+          created: expect.any(Number),
+          owned_by: "openclaw",
+          permission: [],
+          root: "openclaw",
+          parent: null,
+        },
+        {
+          id: "openclaw:mercury",
+          object: "model",
+          created: expect.any(Number),
+          owned_by: "openclaw",
+          permission: [],
+          root: "openclaw:mercury",
+          parent: null,
+        },
+        {
+          id: "openclaw:review",
+          object: "model",
+          created: expect.any(Number),
+          owned_by: "openclaw",
+          permission: [],
+          root: "openclaw:review",
+          parent: null,
+        },
+      ]);
+    } finally {
+      testState.agentsConfig = undefined;
+    }
   });
 
   it("serves /v1/models/{id}", async () => {
