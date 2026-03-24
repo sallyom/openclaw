@@ -37,6 +37,8 @@ The same compatibility surface also includes:
 - `POST /v1/embeddings`
 - `POST /v1/chat/completions`
 
+For the canonical explanation of how model listing, agent routing, and sub-agent model selection fit together, see [OpenAI Chat Completions](/gateway/openai-http-api#model-list-and-agent-routing).
+
 ## Session behavior
 
 By default the endpoint is **stateless per request** (a new session key is generated each call).

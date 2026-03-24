@@ -91,6 +91,12 @@ Why this set matters:
 - Many RAG and memory pipelines expect `/v1/embeddings`.
 - Agent-native clients increasingly prefer `/v1/responses`.
 
+Planning note:
+
+- Keep `/v1/models` as a flat `provider/model` list for client compatibility.
+- Treat agent and sub-agent selection as separate OpenClaw routing concerns, not pseudo-model entries.
+- When you need agent-scoped filtering, pass `x-openclaw-agent-id` on both model-list and request calls.
+
 All of these run on the main Gateway port and use the same trusted operator auth boundary as the rest of the Gateway HTTP API.
 
 ### Port and bind precedence
