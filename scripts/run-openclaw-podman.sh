@@ -64,12 +64,9 @@ ensure_safe_existing_regular_file() {
 ensure_safe_existing_dir() {
   local label="$1"
   local dir="$2"
-  local canonical=""
   validate_absolute_path "$label" "$dir"
   [[ -d "$dir" ]] || fail "Missing $label: $dir"
   [[ ! -L "$dir" ]] || fail "Unsafe $label: symlinks are not allowed ($dir)"
-  canonical="$(cd "$dir" && pwd -P)"
-  [[ "$canonical" == "$dir" ]] || fail "Unsafe $label: symlink-resolved paths are not allowed ($dir -> $canonical)"
 }
 
 ensure_safe_write_file_path() {
