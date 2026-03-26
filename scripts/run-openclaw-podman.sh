@@ -29,10 +29,131 @@ resolve_user_home() {
   printf '%s' "$home"
 }
 
+fail() {
+  echo "$*" >&2
+  exit 1
+}
+
+validate_single_line_value() {
+  local label="$1"
+  local value="$2"
+  if [[ "$value" == *$'\n'* || "$value" == *$'\r'* ]]; then
+    fail "Invalid $label: control characters are not allowed."
+  fi
+}
+
+validate_absolute_path() {
+  local label="$1"
+  local value="$2"
+  validate_single_line_value "$label" "$value"
+  [[ "$value" == /* ]] || fail "Invalid $label: expected an absolute path."
+  [[ "$value" != *"//"* ]] || fail "Invalid $label: repeated slashes are not allowed."
+  [[ "$value" != *"/./"* && "$value" != */. && "$value" != *"/../"* && "$value" != */.. ]] ||
+    fail "Invalid $label: dot path segments are not allowed."
+}
+
+ensure_safe_existing_regular_file() {
+  local label="$1"
+  local file="$2"
+  validate_absolute_path "$label" "$file"
+  [[ -e "$file" ]] || fail "Missing $label: $file"
+  [[ ! -L "$file" ]] || fail "Unsafe $label: symlinks are not allowed ($file)"
+  [[ -f "$file" ]] || fail "Unsafe $label: expected a regular file ($file)"
+}
+
+ensure_safe_existing_dir() {
+  local label="$1"
+  local dir="$2"
+  local canonical=""
+  validate_absolute_path "$label" "$dir"
+  [[ -d "$dir" ]] || fail "Missing $label: $dir"
+  [[ ! -L "$dir" ]] || fail "Unsafe $label: symlinks are not allowed ($dir)"
+  canonical="$(cd "$dir" && pwd -P)"
+  [[ "$canonical" == "$dir" ]] || fail "Unsafe $label: symlink-resolved paths are not allowed ($dir -> $canonical)"
+}
+
+ensure_safe_write_file_path() {
+  local label="$1"
+  local file="$2"
+  local dir
+  validate_absolute_path "$label" "$file"
+  if [[ -e "$file" ]]; then
+    [[ ! -L "$file" ]] || fail "Unsafe $label: symlinks are not allowed ($file)"
+    [[ -f "$file" ]] || fail "Unsafe $label: expected a regular file ($file)"
+  fi
+  dir="$(dirname "$file")"
+  ensure_safe_existing_dir "${label} parent directory" "$dir"
+}
+
+load_podman_env_file() {
+  local file="$1"
+  local line=""
+  local key=""
+  local value=""
+  local trimmed=""
+  ensure_safe_existing_regular_file "Podman env file" "$file"
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    trimmed="${line#"${line%%[![:space:]]*}"}"
+    [[ -z "$trimmed" || "${trimmed:0:1}" == "#" ]] && continue
+    [[ "$line" == *"="* ]] || continue
+    key="${line%%=*}"
+    value="${line#*=}"
+    key="${key#"${key%%[![:space:]]*}"}"
+    key="${key%"${key##*[![:space:]]}"}"
+    [[ "$key" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || continue
+    case "$key" in
+      OPENCLAW_GATEWAY_TOKEN|OPENCLAW_PODMAN_CONTAINER|OPENCLAW_PODMAN_IMAGE|OPENCLAW_IMAGE|OPENCLAW_PODMAN_PULL|OPENCLAW_PODMAN_GATEWAY_HOST_PORT|OPENCLAW_GATEWAY_PORT|OPENCLAW_PODMAN_BRIDGE_HOST_PORT|OPENCLAW_BRIDGE_PORT|OPENCLAW_GATEWAY_BIND|OPENCLAW_PODMAN_USERNS|OPENCLAW_BIND_MOUNT_OPTIONS)
+        ;;
+      *)
+        continue
+        ;;
+    esac
+    if [[ "$value" =~ ^\".*\"$ || "$value" =~ ^\'.*\'$ ]]; then
+      value="${value:1:${#value}-2}"
+    fi
+    printf -v "$key" '%s' "$value"
+    export "$key"
+  done <"$file"
+}
+
+load_launcher_state_file() {
+  local file="$1"
+  local line=""
+  local key=""
+  local value=""
+  local trimmed=""
+  ensure_safe_existing_regular_file "Podman launcher state file" "$file"
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    trimmed="${line#"${line%%[![:space:]]*}"}"
+    [[ -z "$trimmed" || "${trimmed:0:1}" == "#" ]] && continue
+    [[ "$line" == *"="* ]] || continue
+    key="${line%%=*}"
+    value="${line#*=}"
+    key="${key#"${key%%[![:space:]]*}"}"
+    key="${key%"${key##*[![:space:]]}"}"
+    [[ "$key" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || continue
+    case "$key" in
+      OPENCLAW_CONFIG_DIR|OPENCLAW_WORKSPACE_DIR|OPENCLAW_PODMAN_ENV)
+        ;;
+      *)
+        continue
+        ;;
+    esac
+    if [[ "$value" =~ ^\".*\"$ || "$value" =~ ^\'.*\'$ ]]; then
+      value="${value:1:${#value}-2}"
+    fi
+    printf -v "$key" '%s' "$value"
+    export "$key"
+  done <"$file"
+}
+
 EFFECTIVE_USER="$(id -un)"
 EFFECTIVE_HOME="${HOME:-}"
 if [[ -z "$EFFECTIVE_HOME" ]]; then
   EFFECTIVE_HOME="$(resolve_user_home "$EFFECTIVE_USER")"
+fi
+if [[ "$(id -u)" -eq 0 ]]; then
+  fail "Run run-openclaw-podman.sh as your normal user so Podman stays rootless."
 fi
 
 # Legacy: setup-host -> run the Podman setup script
@@ -58,14 +179,20 @@ fi
 if [[ -z "${EFFECTIVE_HOME:-}" ]]; then
   EFFECTIVE_HOME="/tmp"
 fi
+validate_absolute_path "effective home" "$EFFECTIVE_HOME"
+
+LAUNCHER_STATE_FILE="${EFFECTIVE_HOME}/.config/openclaw/podman-launcher.env"
+if [[ -z "${OPENCLAW_CONFIG_DIR:-}" && -z "${OPENCLAW_WORKSPACE_DIR:-}" && -z "${OPENCLAW_PODMAN_ENV:-}" ]] && [[ -f "$LAUNCHER_STATE_FILE" ]]; then
+  load_launcher_state_file "$LAUNCHER_STATE_FILE"
+fi
 
 CONFIG_DIR="${OPENCLAW_CONFIG_DIR:-$EFFECTIVE_HOME/.openclaw}"
 ENV_FILE="${OPENCLAW_PODMAN_ENV:-$CONFIG_DIR/.env}"
+# Bootstrap `.env` may set runtime/container options, but it must not
+# relocate the config/workspace/env paths mid-run. Those path overrides are
+# only honored from the parent process environment before bootstrap.
 if [[ -f "$ENV_FILE" ]]; then
-  set -a
-  # shellcheck source=/dev/null
-  source "$ENV_FILE" 2>/dev/null || true
-  set +a
+  load_podman_env_file "$ENV_FILE"
 fi
 
 CONFIG_DIR="${OPENCLAW_CONFIG_DIR:-$EFFECTIVE_HOME/.openclaw}"
@@ -76,6 +203,11 @@ OPENCLAW_IMAGE="${OPENCLAW_PODMAN_IMAGE:-${OPENCLAW_IMAGE:-openclaw:local}}"
 PODMAN_PULL="${OPENCLAW_PODMAN_PULL:-never}"
 HOST_GATEWAY_PORT="${OPENCLAW_PODMAN_GATEWAY_HOST_PORT:-${OPENCLAW_GATEWAY_PORT:-18789}}"
 HOST_BRIDGE_PORT="${OPENCLAW_PODMAN_BRIDGE_HOST_PORT:-${OPENCLAW_BRIDGE_PORT:-18790}}"
+validate_absolute_path "config directory" "$CONFIG_DIR"
+validate_absolute_path "workspace directory" "$WORKSPACE_DIR"
+validate_absolute_path "env file path" "$ENV_FILE"
+validate_single_line_value "container name" "$CONTAINER_NAME"
+validate_single_line_value "image name" "$OPENCLAW_IMAGE"
 
 cd "$EFFECTIVE_HOME" 2>/dev/null || cd /tmp 2>/dev/null || true
 
@@ -87,6 +219,8 @@ fi
 
 mkdir -p "$CONFIG_DIR" "$WORKSPACE_DIR"
 mkdir -p "$CONFIG_DIR/canvas" "$CONFIG_DIR/cron"
+ensure_safe_existing_dir "config directory" "$CONFIG_DIR"
+ensure_safe_existing_dir "workspace directory" "$WORKSPACE_DIR"
 chmod 700 "$CONFIG_DIR" "$WORKSPACE_DIR" 2>/dev/null || true
 
 # Keep Podman default local-only unless explicitly overridden.
@@ -97,7 +231,10 @@ upsert_env_var() {
   local key="$2"
   local value="$3"
   local tmp
-  tmp="$(mktemp)"
+  local dir
+  ensure_safe_write_file_path "env file" "$file"
+  dir="$(dirname "$file")"
+  tmp="$(mktemp "$dir/.env.tmp.XXXXXX")"
   if [[ -f "$file" ]]; then
     awk -v k="$key" -v v="$value" '
       BEGIN { found = 0 }
@@ -135,12 +272,15 @@ PY
 if [[ -z "${OPENCLAW_GATEWAY_TOKEN:-}" ]]; then
   export OPENCLAW_GATEWAY_TOKEN="$(generate_token_hex_32)"
   mkdir -p "$(dirname "$ENV_FILE")"
+  ensure_safe_existing_dir "env file directory" "$(dirname "$ENV_FILE")"
   upsert_env_var "$ENV_FILE" "OPENCLAW_GATEWAY_TOKEN" "$OPENCLAW_GATEWAY_TOKEN"
   echo "Generated OPENCLAW_GATEWAY_TOKEN and wrote it to $ENV_FILE." >&2
 fi
 
 CONFIG_JSON="$CONFIG_DIR/openclaw.json"
 if [[ ! -f "$CONFIG_JSON" ]]; then
+  ensure_safe_existing_dir "config directory" "$CONFIG_DIR"
+  ensure_safe_write_file_path "config file" "$CONFIG_JSON"
   echo '{ "gateway": { "mode": "local" } }' >"$CONFIG_JSON"
   chmod 600 "$CONFIG_JSON" 2>/dev/null || true
   echo "Created $CONFIG_JSON (minimal gateway.mode=local)." >&2
@@ -191,7 +331,7 @@ if [[ "$RUN_SETUP" == true ]]; then
     -e HOME=/home/node -e TERM=xterm-256color -e BROWSER=echo \
     -e NPM_CONFIG_CACHE=/home/node/.openclaw/.npm \
     -e NPM_CONFIG_PREFIX=/home/node/.openclaw/.npm-global \
-    -e PATH=/home/node/.openclaw/.npm-global/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
+    -e PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/home/node/.openclaw/.npm-global/bin \
     -e OPENCLAW_NO_RESPAWN=1 \
     -e OPENCLAW_GATEWAY_TOKEN="$OPENCLAW_GATEWAY_TOKEN" \
     -v "$CONFIG_DIR:/home/node/.openclaw:rw${SELINUX_MOUNT_OPTS}" \
@@ -208,7 +348,7 @@ podman run --pull="$PODMAN_PULL" -d --replace \
   -e HOME=/home/node -e TERM=xterm-256color \
   -e NPM_CONFIG_CACHE=/home/node/.openclaw/.npm \
   -e NPM_CONFIG_PREFIX=/home/node/.openclaw/.npm-global \
-  -e PATH=/home/node/.openclaw/.npm-global/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
+  -e PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/home/node/.openclaw/.npm-global/bin \
   -e OPENCLAW_NO_RESPAWN=1 \
   -e OPENCLAW_GATEWAY_TOKEN="$OPENCLAW_GATEWAY_TOKEN" \
   "${ENV_FILE_ARGS[@]}" \
