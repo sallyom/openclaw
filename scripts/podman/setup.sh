@@ -1,17 +1,17 @@
 #!/usr/bin/env bash
 # One-time host setup for rootless OpenClaw in Podman. Uses the current
 # non-root user throughout, builds or pulls the image into that user's Podman
-# store, writes config under ~/.openclaw by default, and installs the launch
-# script to ~/.local/bin/run-openclaw-podman.sh.
+# store, writes config under ~/.openclaw by default, and uses the repo-local
+# launch script at ./scripts/run-openclaw-podman.sh.
 #
 # Usage: ./scripts/podman/setup.sh [--quadlet|--container]
 #   --quadlet   Install a Podman Quadlet as the current user's systemd service
-#   --container Only install image + launch script; you start the container manually (default)
+#   --container Only install image + config; you start the container manually (default)
 #   Or set OPENCLAW_PODMAN_QUADLET=1 (or 0) to choose without a flag.
 #
 # After this, start the gateway manually:
-#   ~/.local/bin/run-openclaw-podman.sh launch
-#   ~/.local/bin/run-openclaw-podman.sh launch setup
+#   ./scripts/run-openclaw-podman.sh launch
+#   ./scripts/run-openclaw-podman.sh launch setup
 # Or, if you used --quadlet:
 #   systemctl --user start openclaw.service
 set -euo pipefail
@@ -25,9 +25,9 @@ OPENCLAW_CONFIG_DIR="${OPENCLAW_CONFIG_DIR:-}"
 OPENCLAW_WORKSPACE_DIR="${OPENCLAW_WORKSPACE_DIR:-}"
 OPENCLAW_IMAGE="${OPENCLAW_PODMAN_IMAGE:-${OPENCLAW_IMAGE:-openclaw:local}}"
 OPENCLAW_CONTAINER_NAME="${OPENCLAW_PODMAN_CONTAINER:-openclaw}"
-LAUNCH_SCRIPT_DIR="${OPENCLAW_PODMAN_BIN_DIR:-}"
-LAUNCHER_STATE_DIR=""
-LAUNCHER_STATE_FILE=""
+PLATFORM_NAME="$(uname -s 2>/dev/null || echo unknown)"
+HOST_GATEWAY_PORT="${OPENCLAW_PODMAN_GATEWAY_HOST_PORT:-${OPENCLAW_GATEWAY_PORT:-18789}}"
+QUADLET_GATEWAY_PORT="18789"
 
 require_cmd() {
   if ! command -v "$1" >/dev/null 2>&1; then
@@ -61,6 +61,13 @@ validate_absolute_path() {
     fail "Invalid $label: dot path segments are not allowed."
 }
 
+validate_mount_source_path() {
+  local label="$1"
+  local value="$2"
+  validate_absolute_path "$label" "$value"
+  [[ "$value" != *:* ]] || fail "Invalid $label: ':' is not allowed in Podman bind-mount source paths."
+}
+
 validate_container_name() {
   local value="$1"
   validate_single_line_value "container name" "$value"
@@ -88,6 +95,36 @@ ensure_safe_existing_dir() {
   [[ ! -L "$dir" ]] || fail "Unsafe $label: symlinks are not allowed ($dir)"
 }
 
+stat_uid() {
+  local path="$1"
+  if stat -f '%u' "$path" >/dev/null 2>&1; then
+    stat -f '%u' "$path"
+  else
+    stat -Lc '%u' "$path"
+  fi
+}
+
+stat_mode() {
+  local path="$1"
+  if stat -f '%Lp' "$path" >/dev/null 2>&1; then
+    stat -f '%Lp' "$path"
+  else
+    stat -Lc '%a' "$path"
+  fi
+}
+
+ensure_private_existing_dir_owned_by_user() {
+  local label="$1"
+  local dir="$2"
+  local uid=""
+  local mode=""
+  ensure_safe_existing_dir "$label" "$dir"
+  uid="$(stat_uid "$dir")"
+  [[ "$uid" == "$(id -u)" ]] || fail "Unsafe $label: not owned by current user ($dir)"
+  mode="$(stat_mode "$dir")"
+  (( (8#$mode & 0022) == 0 )) || fail "Unsafe $label: group/other writable ($dir)"
+}
+
 ensure_safe_write_file_path() {
   local label="$1"
   local file="$2"
@@ -112,6 +149,15 @@ write_file_atomically() {
   cat >"$tmp"
   chmod "$mode" "$tmp"
   mv -f "$tmp" "$file"
+}
+
+validate_port() {
+  local label="$1"
+  local value="$2"
+  local numeric=""
+  [[ "$value" =~ ^[0-9]{1,5}$ ]] || fail "Invalid $label: must be numeric."
+  numeric=$((10#$value))
+  (( numeric >= 1 && numeric <= 65535 )) || fail "Invalid $label: out of range."
 }
 
 escape_sed_replacement_pipe_delim() {
@@ -153,6 +199,81 @@ PY
   exit 1
 }
 
+seed_local_control_ui_origins() {
+  local file="$1"
+  local port="$2"
+  local dir=""
+  local tmp=""
+  ensure_safe_write_file_path "config file" "$file"
+  if ! command -v python3 >/dev/null 2>&1; then
+    echo "Warning: python3 not found; unable to seed gateway.controlUi.allowedOrigins in $file." >&2
+    return 0
+  fi
+  dir="$(dirname "$file")"
+  tmp="$(mktemp "$dir/.config.tmp.XXXXXX")"
+  if ! python3 - "$file" "$port" "$tmp" <<'PY'
+import json
+import sys
+
+path = sys.argv[1]
+port = sys.argv[2]
+tmp = sys.argv[3]
+try:
+    with open(path, "r", encoding="utf-8") as fh:
+        data = json.load(fh)
+except json.JSONDecodeError as exc:
+    print(
+        f"Warning: unable to seed gateway.controlUi.allowedOrigins in {path}: existing config is not strict JSON ({exc}). Leaving file unchanged.",
+        file=sys.stderr,
+    )
+    raise SystemExit(1)
+if not isinstance(data, dict):
+    raise SystemExit(f"{path}: expected top-level object")
+gateway = data.setdefault("gateway", {})
+if not isinstance(gateway, dict):
+    raise SystemExit(f"{path}: expected gateway object")
+gateway.setdefault("mode", "local")
+control_ui = gateway.setdefault("controlUi", {})
+if not isinstance(control_ui, dict):
+    raise SystemExit(f"{path}: expected gateway.controlUi object")
+allowed = control_ui.get("allowedOrigins")
+managed_localhosts = {"127.0.0.1", "localhost"}
+desired = [
+    f"http://127.0.0.1:{port}",
+    f"http://localhost:{port}",
+]
+if not isinstance(allowed, list):
+    allowed = []
+cleaned = []
+for origin in allowed:
+    if not isinstance(origin, str):
+        continue
+    normalized = origin.strip()
+    if not normalized:
+        continue
+    if normalized.startswith("http://"):
+        host_port = normalized[len("http://") :]
+        host = host_port.split(":", 1)[0]
+        if host in managed_localhosts:
+            continue
+    cleaned.append(normalized)
+control_ui["allowedOrigins"] = cleaned + desired
+with open(tmp, "w", encoding="utf-8") as fh:
+    json.dump(data, fh, indent=2)
+    fh.write("\n")
+PY
+  then
+    rm -f "$tmp"
+    return 0
+  fi
+  [[ -s "$tmp" ]] || {
+    rm -f "$tmp"
+    return 0
+  }
+  chmod 600 "$tmp" 2>/dev/null || true
+  mv -f "$tmp" "$file"
+}
+
 upsert_env_var() {
   local file="$1"
   local key="$2"
@@ -189,6 +310,14 @@ if [[ -n "${OPENCLAW_PODMAN_QUADLET:-}" ]]; then
     0|no|false) INSTALL_QUADLET=false ;;
   esac
 fi
+if [[ "$INSTALL_QUADLET" == true && "$PLATFORM_NAME" != "Linux" ]]; then
+  fail "--quadlet is only supported on Linux with systemd user services."
+fi
+
+SEED_GATEWAY_PORT="$HOST_GATEWAY_PORT"
+if [[ "$INSTALL_QUADLET" == true ]]; then
+  SEED_GATEWAY_PORT="$QUADLET_GATEWAY_PORT"
+fi
 
 require_cmd podman
 if is_root; then
@@ -217,26 +346,17 @@ fi
 if [[ -z "$OPENCLAW_WORKSPACE_DIR" ]]; then
   OPENCLAW_WORKSPACE_DIR="$OPENCLAW_CONFIG_DIR/workspace"
 fi
-if [[ -z "$LAUNCH_SCRIPT_DIR" ]]; then
-  LAUNCH_SCRIPT_DIR="$OPENCLAW_HOME/.local/bin"
-fi
 validate_absolute_path "home directory" "$OPENCLAW_HOME"
-validate_absolute_path "config directory" "$OPENCLAW_CONFIG_DIR"
-validate_absolute_path "workspace directory" "$OPENCLAW_WORKSPACE_DIR"
-validate_absolute_path "launcher install directory" "$LAUNCH_SCRIPT_DIR"
+validate_mount_source_path "config directory" "$OPENCLAW_CONFIG_DIR"
+validate_mount_source_path "workspace directory" "$OPENCLAW_WORKSPACE_DIR"
 validate_container_name "$OPENCLAW_CONTAINER_NAME"
 validate_image_name "$OPENCLAW_IMAGE"
-LAUNCH_SCRIPT_DST="$LAUNCH_SCRIPT_DIR/run-openclaw-podman.sh"
-LAUNCHER_STATE_DIR="$OPENCLAW_HOME/.config/openclaw"
-LAUNCHER_STATE_FILE="$LAUNCHER_STATE_DIR/podman-launcher.env"
+validate_port "gateway host port" "$HOST_GATEWAY_PORT"
+validate_port "seed gateway port" "$SEED_GATEWAY_PORT"
 
 install -d -m 700 "$OPENCLAW_CONFIG_DIR" "$OPENCLAW_WORKSPACE_DIR"
-install -d -m 755 "$LAUNCH_SCRIPT_DIR"
-install -d -m 700 "$LAUNCHER_STATE_DIR"
-ensure_safe_existing_dir "config directory" "$OPENCLAW_CONFIG_DIR"
-ensure_safe_existing_dir "workspace directory" "$OPENCLAW_WORKSPACE_DIR"
-ensure_safe_existing_dir "launcher install directory" "$LAUNCH_SCRIPT_DIR"
-ensure_safe_existing_dir "launcher state directory" "$LAUNCHER_STATE_DIR"
+ensure_private_existing_dir_owned_by_user "config directory" "$OPENCLAW_CONFIG_DIR"
+ensure_private_existing_dir_owned_by_user "workspace directory" "$OPENCLAW_WORKSPACE_DIR"
 
 BUILD_ARGS=()
 if [[ -n "${OPENCLAW_DOCKER_APT_PACKAGES:-}" ]]; then
@@ -258,17 +378,6 @@ else
   fi
 fi
 
-echo "Installing launch script to $LAUNCH_SCRIPT_DST ..."
-install -m 0755 "$RUN_SCRIPT_SRC" "$LAUNCH_SCRIPT_DST"
-(
-  umask 077
-  write_file_atomically "$LAUNCHER_STATE_FILE" 600 <<EOF
-OPENCLAW_CONFIG_DIR=$OPENCLAW_CONFIG_DIR
-OPENCLAW_WORKSPACE_DIR=$OPENCLAW_WORKSPACE_DIR
-OPENCLAW_PODMAN_ENV=$OPENCLAW_CONFIG_DIR/.env
-EOF
-)
-
 ENV_FILE="$OPENCLAW_CONFIG_DIR/.env"
 if [[ ! -f "$ENV_FILE" ]]; then
   TOKEN="$(generate_token_hex_32)"
@@ -287,12 +396,23 @@ CONFIG_JSON="$OPENCLAW_CONFIG_DIR/openclaw.json"
 if [[ ! -f "$CONFIG_JSON" ]]; then
   (
     umask 077
-    write_file_atomically "$CONFIG_JSON" 600 <<'JSON'
-{ "gateway": { "mode": "local" } }
+    write_file_atomically "$CONFIG_JSON" 600 <<JSON
+{
+  "gateway": {
+    "mode": "local",
+        "controlUi": {
+          "allowedOrigins": [
+        "http://127.0.0.1:${SEED_GATEWAY_PORT}",
+        "http://localhost:${SEED_GATEWAY_PORT}"
+      ]
+    }
+  }
+}
 JSON
   )
   echo "Wrote minimal config to $CONFIG_JSON"
 fi
+seed_local_control_ui_origins "$CONFIG_JSON" "$SEED_GATEWAY_PORT"
 
 if [[ "$INSTALL_QUADLET" == true ]]; then
   QUADLET_DIR="$OPENCLAW_HOME/.config/containers/systemd"
@@ -328,11 +448,11 @@ if [[ "$INSTALL_QUADLET" == true ]]; then
     echo "systemctl not found; Quadlet installed but not started." >&2
   fi
 else
-  echo "Container + launch script installed."
+  echo "Container setup complete."
 fi
 
 echo
 echo "Next:"
-echo "  $LAUNCH_SCRIPT_DST launch"
-echo "  $LAUNCH_SCRIPT_DST launch setup"
+echo "  ./scripts/run-openclaw-podman.sh launch"
+echo "  ./scripts/run-openclaw-podman.sh launch setup"
 echo "  openclaw --container $OPENCLAW_CONTAINER_NAME dashboard --no-open"

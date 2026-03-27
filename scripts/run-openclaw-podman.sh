@@ -3,8 +3,8 @@
 #
 # One-time setup (from repo root): ./scripts/podman/setup.sh
 # Then:
-#   ~/.local/bin/run-openclaw-podman.sh launch        # Start gateway
-#   ~/.local/bin/run-openclaw-podman.sh launch setup  # Onboarding wizard
+#   ./scripts/run-openclaw-podman.sh launch        # Start gateway
+#   ./scripts/run-openclaw-podman.sh launch setup  # Onboarding wizard
 #
 # Manage the running container from the host CLI:
 #   openclaw --container openclaw dashboard --no-open
@@ -13,6 +13,8 @@
 # Legacy: "setup-host" delegates to the Podman setup script
 
 set -euo pipefail
+
+PLATFORM_NAME="$(uname -s 2>/dev/null || echo unknown)"
 
 resolve_user_home() {
   local user="$1"
@@ -52,6 +54,13 @@ validate_absolute_path() {
     fail "Invalid $label: dot path segments are not allowed."
 }
 
+validate_mount_source_path() {
+  local label="$1"
+  local value="$2"
+  validate_absolute_path "$label" "$value"
+  [[ "$value" != *:* ]] || fail "Invalid $label: ':' is not allowed in Podman bind-mount source paths."
+}
+
 ensure_safe_existing_regular_file() {
   local label="$1"
   local file="$2"
@@ -69,6 +78,48 @@ ensure_safe_existing_dir() {
   [[ ! -L "$dir" ]] || fail "Unsafe $label: symlinks are not allowed ($dir)"
 }
 
+stat_uid() {
+  local path="$1"
+  if stat -f '%u' "$path" >/dev/null 2>&1; then
+    stat -f '%u' "$path"
+  else
+    stat -Lc '%u' "$path"
+  fi
+}
+
+stat_mode() {
+  local path="$1"
+  if stat -f '%Lp' "$path" >/dev/null 2>&1; then
+    stat -f '%Lp' "$path"
+  else
+    stat -Lc '%a' "$path"
+  fi
+}
+
+ensure_private_existing_dir_owned_by_user() {
+  local label="$1"
+  local dir="$2"
+  local uid=""
+  local mode=""
+  ensure_safe_existing_dir "$label" "$dir"
+  uid="$(stat_uid "$dir")"
+  [[ "$uid" == "$(id -u)" ]] || fail "Unsafe $label: not owned by current user ($dir)"
+  mode="$(stat_mode "$dir")"
+  (( (8#$mode & 0022) == 0 )) || fail "Unsafe $label: group/other writable ($dir)"
+}
+
+ensure_private_existing_regular_file_owned_by_user() {
+  local label="$1"
+  local file="$2"
+  local uid=""
+  local mode=""
+  ensure_safe_existing_regular_file "$label" "$file"
+  uid="$(stat_uid "$file")"
+  [[ "$uid" == "$(id -u)" ]] || fail "Unsafe $label: not owned by current user ($file)"
+  mode="$(stat_mode "$file")"
+  (( (8#$mode & 0077) == 0 )) || fail "Unsafe $label: expected owner-only permissions ($file)"
+}
+
 ensure_safe_write_file_path() {
   local label="$1"
   local file="$2"
@@ -82,14 +133,31 @@ ensure_safe_write_file_path() {
   ensure_safe_existing_dir "${label} parent directory" "$dir"
 }
 
+write_file_atomically() {
+  local file="$1"
+  local mode="$2"
+  local dir=""
+  local tmp=""
+  ensure_safe_write_file_path "output file" "$file"
+  dir="$(dirname "$file")"
+  tmp="$(mktemp "$dir/.tmp.XXXXXX")"
+  cat >"$tmp"
+  chmod "$mode" "$tmp"
+  mv -f "$tmp" "$file"
+}
+
 load_podman_env_file() {
   local file="$1"
   local line=""
   local key=""
   local value=""
   local trimmed=""
-  ensure_safe_existing_regular_file "Podman env file" "$file"
-  while IFS= read -r line || [[ -n "$line" ]]; do
+  local dir=""
+  ensure_private_existing_regular_file_owned_by_user "Podman env file" "$file"
+  dir="$(dirname "$file")"
+  ensure_private_existing_dir_owned_by_user "Podman env directory" "$dir"
+  exec 9<"$file" || fail "Unable to open Podman env file: $file"
+  while IFS= read -r line <&9 || [[ -n "$line" ]]; do
     trimmed="${line#"${line%%[![:space:]]*}"}"
     [[ -z "$trimmed" || "${trimmed:0:1}" == "#" ]] && continue
     [[ "$line" == *"="* ]] || continue
@@ -99,7 +167,7 @@ load_podman_env_file() {
     key="${key%"${key##*[![:space:]]}"}"
     [[ "$key" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || continue
     case "$key" in
-      OPENCLAW_GATEWAY_TOKEN|OPENCLAW_PODMAN_CONTAINER|OPENCLAW_PODMAN_IMAGE|OPENCLAW_IMAGE|OPENCLAW_PODMAN_PULL|OPENCLAW_PODMAN_GATEWAY_HOST_PORT|OPENCLAW_GATEWAY_PORT|OPENCLAW_PODMAN_BRIDGE_HOST_PORT|OPENCLAW_BRIDGE_PORT|OPENCLAW_GATEWAY_BIND|OPENCLAW_PODMAN_USERNS|OPENCLAW_BIND_MOUNT_OPTIONS)
+      OPENCLAW_GATEWAY_TOKEN|OPENCLAW_PODMAN_CONTAINER|OPENCLAW_PODMAN_IMAGE|OPENCLAW_IMAGE|OPENCLAW_PODMAN_PULL|OPENCLAW_PODMAN_GATEWAY_HOST_PORT|OPENCLAW_GATEWAY_PORT|OPENCLAW_PODMAN_BRIDGE_HOST_PORT|OPENCLAW_BRIDGE_PORT|OPENCLAW_GATEWAY_BIND|OPENCLAW_PODMAN_USERNS|OPENCLAW_BIND_MOUNT_OPTIONS|OPENCLAW_PODMAN_PUBLISH_HOST)
         ;;
       *)
         continue
@@ -110,38 +178,17 @@ load_podman_env_file() {
     fi
     printf -v "$key" '%s' "$value"
     export "$key"
-  done <"$file"
+  done
+  exec 9<&-
 }
 
-load_launcher_state_file() {
-  local file="$1"
-  local line=""
-  local key=""
-  local value=""
-  local trimmed=""
-  ensure_safe_existing_regular_file "Podman launcher state file" "$file"
-  while IFS= read -r line || [[ -n "$line" ]]; do
-    trimmed="${line#"${line%%[![:space:]]*}"}"
-    [[ -z "$trimmed" || "${trimmed:0:1}" == "#" ]] && continue
-    [[ "$line" == *"="* ]] || continue
-    key="${line%%=*}"
-    value="${line#*=}"
-    key="${key#"${key%%[![:space:]]*}"}"
-    key="${key%"${key##*[![:space:]]}"}"
-    [[ "$key" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || continue
-    case "$key" in
-      OPENCLAW_CONFIG_DIR|OPENCLAW_WORKSPACE_DIR|OPENCLAW_PODMAN_ENV)
-        ;;
-      *)
-        continue
-        ;;
-    esac
-    if [[ "$value" =~ ^\".*\"$ || "$value" =~ ^\'.*\'$ ]]; then
-      value="${value:1:${#value}-2}"
-    fi
-    printf -v "$key" '%s' "$value"
-    export "$key"
-  done <"$file"
+validate_port() {
+  local label="$1"
+  local value="$2"
+  local numeric=""
+  [[ "$value" =~ ^[0-9]{1,5}$ ]] || fail "Invalid $label: must be numeric."
+  numeric=$((10#$value))
+  (( numeric >= 1 && numeric <= 65535 )) || fail "Invalid $label: out of range."
 }
 
 EFFECTIVE_USER="$(id -un)"
@@ -178,11 +225,6 @@ if [[ -z "${EFFECTIVE_HOME:-}" ]]; then
 fi
 validate_absolute_path "effective home" "$EFFECTIVE_HOME"
 
-LAUNCHER_STATE_FILE="${EFFECTIVE_HOME}/.config/openclaw/podman-launcher.env"
-if [[ -z "${OPENCLAW_CONFIG_DIR:-}" && -z "${OPENCLAW_WORKSPACE_DIR:-}" && -z "${OPENCLAW_PODMAN_ENV:-}" ]] && [[ -f "$LAUNCHER_STATE_FILE" ]]; then
-  load_launcher_state_file "$LAUNCHER_STATE_FILE"
-fi
-
 CONFIG_DIR="${OPENCLAW_CONFIG_DIR:-$EFFECTIVE_HOME/.openclaw}"
 ENV_FILE="${OPENCLAW_PODMAN_ENV:-$CONFIG_DIR/.env}"
 # Bootstrap `.env` may set runtime/container options, but it must not
@@ -200,11 +242,15 @@ OPENCLAW_IMAGE="${OPENCLAW_PODMAN_IMAGE:-${OPENCLAW_IMAGE:-openclaw:local}}"
 PODMAN_PULL="${OPENCLAW_PODMAN_PULL:-never}"
 HOST_GATEWAY_PORT="${OPENCLAW_PODMAN_GATEWAY_HOST_PORT:-${OPENCLAW_GATEWAY_PORT:-18789}}"
 HOST_BRIDGE_PORT="${OPENCLAW_PODMAN_BRIDGE_HOST_PORT:-${OPENCLAW_BRIDGE_PORT:-18790}}"
-validate_absolute_path "config directory" "$CONFIG_DIR"
-validate_absolute_path "workspace directory" "$WORKSPACE_DIR"
+PUBLISH_HOST="${OPENCLAW_PODMAN_PUBLISH_HOST:-127.0.0.1}"
+validate_mount_source_path "config directory" "$CONFIG_DIR"
+validate_mount_source_path "workspace directory" "$WORKSPACE_DIR"
 validate_absolute_path "env file path" "$ENV_FILE"
 validate_single_line_value "container name" "$CONTAINER_NAME"
 validate_single_line_value "image name" "$OPENCLAW_IMAGE"
+validate_single_line_value "publish host" "$PUBLISH_HOST"
+validate_port "gateway host port" "$HOST_GATEWAY_PORT"
+validate_port "bridge host port" "$HOST_BRIDGE_PORT"
 
 cd "$EFFECTIVE_HOME" 2>/dev/null || cd /tmp 2>/dev/null || true
 
@@ -216,12 +262,13 @@ fi
 
 mkdir -p "$CONFIG_DIR" "$WORKSPACE_DIR"
 mkdir -p "$CONFIG_DIR/canvas" "$CONFIG_DIR/cron"
-ensure_safe_existing_dir "config directory" "$CONFIG_DIR"
-ensure_safe_existing_dir "workspace directory" "$WORKSPACE_DIR"
-chmod 700 "$CONFIG_DIR" "$WORKSPACE_DIR" 2>/dev/null || true
+chmod 700 "$CONFIG_DIR" "$WORKSPACE_DIR"
+ensure_private_existing_dir_owned_by_user "config directory" "$CONFIG_DIR"
+ensure_private_existing_dir_owned_by_user "workspace directory" "$WORKSPACE_DIR"
 
-# Keep Podman default local-only unless explicitly overridden.
-GATEWAY_BIND="${OPENCLAW_GATEWAY_BIND:-loopback}"
+# For published container ports, the gateway must listen on the container
+# interface. Keep host access local-only by default via 127.0.0.1 publish.
+GATEWAY_BIND="${OPENCLAW_GATEWAY_BIND:-lan}"
 
 upsert_env_var() {
   local file="$1"
@@ -266,6 +313,161 @@ PY
   exit 1
 }
 
+create_token_env_file() {
+  local file="$1"
+  local token="$2"
+  local dir=""
+  local tmp=""
+  dir="$(dirname "$file")"
+  ensure_private_existing_dir_owned_by_user "token env directory" "$dir"
+  tmp="$(mktemp "$dir/.token.env.XXXXXX")"
+  chmod 600 "$tmp"
+  printf 'OPENCLAW_GATEWAY_TOKEN=%s\n' "$token" >"$tmp"
+  printf '%s' "$tmp"
+}
+
+sync_local_control_ui_origins_via_cli() {
+  local file="$1"
+  local port="$2"
+  local config_dir=""
+  local allowed_json=""
+  local merged_json=""
+  config_dir="$(dirname "$file")"
+  if ! command -v openclaw >/dev/null 2>&1; then
+    echo "Warning: openclaw not found; unable to sync gateway.controlUi.allowedOrigins in $file." >&2
+    return 0
+  fi
+  if ! command -v python3 >/dev/null 2>&1; then
+    OPENCLAW_CONTAINER="" OPENCLAW_CONFIG_DIR="$config_dir" \
+      openclaw config set gateway.controlUi.allowedOrigins \
+      "[\"http://127.0.0.1:${port}\",\"http://localhost:${port}\"]" \
+      --strict-json >/dev/null
+    return 0
+  fi
+  allowed_json="$(
+    OPENCLAW_CONTAINER="" OPENCLAW_CONFIG_DIR="$config_dir" \
+      openclaw config get gateway.controlUi.allowedOrigins --json 2>/dev/null || true
+  )"
+  merged_json="$(python3 - "$port" "$allowed_json" <<'PY'
+import json
+import sys
+
+port = sys.argv[1]
+raw = sys.argv[2] if len(sys.argv) > 2 else ""
+desired = [
+    f"http://127.0.0.1:{port}",
+    f"http://localhost:{port}",
+]
+allowed = []
+if raw:
+    try:
+        parsed = json.loads(raw)
+        if isinstance(parsed, list):
+            allowed = parsed
+    except json.JSONDecodeError:
+        allowed = []
+cleaned = []
+seen = set()
+for origin in allowed + desired:
+    if not isinstance(origin, str):
+        continue
+    normalized = origin.strip()
+    if not normalized or normalized in seen:
+        continue
+    cleaned.append(normalized)
+    seen.add(normalized)
+print(json.dumps(cleaned))
+PY
+  )"
+  OPENCLAW_CONTAINER="" OPENCLAW_CONFIG_DIR="$config_dir" \
+    openclaw config set gateway.controlUi.allowedOrigins "$merged_json" --strict-json >/dev/null
+}
+
+sync_local_control_ui_origins() {
+  local file="$1"
+  local port="$2"
+  local dir=""
+  local tmp=""
+  ensure_safe_write_file_path "config file" "$file"
+  if ! command -v python3 >/dev/null 2>&1; then
+    echo "Warning: python3 not found; unable to sync gateway.controlUi.allowedOrigins in $file." >&2
+    return 0
+  fi
+  dir="$(dirname "$file")"
+  ensure_private_existing_dir_owned_by_user "config file directory" "$dir"
+  tmp="$(mktemp "$dir/.config.tmp.XXXXXX")"
+  if ! python3 - "$file" "$port" "$tmp" <<'PY'
+import json
+import sys
+
+path = sys.argv[1]
+port = sys.argv[2]
+tmp = sys.argv[3]
+try:
+    with open(path, "r", encoding="utf-8") as fh:
+        data = json.load(fh)
+except json.JSONDecodeError as exc:
+    print(
+        f"Warning: unable to sync gateway.controlUi.allowedOrigins in {path}: existing config is not strict JSON ({exc}). Leaving file unchanged.",
+        file=sys.stderr,
+    )
+    raise SystemExit(1)
+if not isinstance(data, dict):
+    raise SystemExit(f"{path}: expected top-level object")
+gateway = data.setdefault("gateway", {})
+if not isinstance(gateway, dict):
+    raise SystemExit(f"{path}: expected gateway object")
+gateway.setdefault("mode", "local")
+control_ui = gateway.setdefault("controlUi", {})
+if not isinstance(control_ui, dict):
+    raise SystemExit(f"{path}: expected gateway.controlUi object")
+allowed = control_ui.get("allowedOrigins")
+desired = [
+    f"http://127.0.0.1:{port}",
+    f"http://localhost:{port}",
+]
+if not isinstance(allowed, list):
+    allowed = []
+cleaned = []
+seen = set()
+for origin in allowed:
+    if not isinstance(origin, str):
+        continue
+    normalized = origin.strip()
+    if not normalized or normalized in seen:
+        continue
+    cleaned.append(normalized)
+    seen.add(normalized)
+for origin in desired:
+    if origin not in seen:
+        cleaned.append(origin)
+        seen.add(origin)
+control_ui["allowedOrigins"] = cleaned
+with open(tmp, "w", encoding="utf-8") as fh:
+    json.dump(data, fh, indent=2)
+    fh.write("\n")
+PY
+  then
+    rm -f "$tmp"
+    sync_local_control_ui_origins_via_cli "$file" "$port"
+    return 0
+  fi
+  [[ -s "$tmp" ]] || {
+    rm -f "$tmp"
+    return 0
+  }
+  chmod 600 "$tmp" 2>/dev/null || true
+  mv -f "$tmp" "$file"
+}
+
+TOKEN_ENV_FILE=""
+cleanup_token_env_file() {
+  if [[ -n "$TOKEN_ENV_FILE" && -f "$TOKEN_ENV_FILE" ]]; then
+    rm -f "$TOKEN_ENV_FILE"
+  fi
+}
+trap cleanup_token_env_file EXIT
+
 if [[ -z "${OPENCLAW_GATEWAY_TOKEN:-}" ]]; then
   export OPENCLAW_GATEWAY_TOKEN="$(generate_token_hex_32)"
   mkdir -p "$(dirname "$ENV_FILE")"
@@ -276,12 +478,15 @@ fi
 
 CONFIG_JSON="$CONFIG_DIR/openclaw.json"
 if [[ ! -f "$CONFIG_JSON" ]]; then
-  ensure_safe_existing_dir "config directory" "$CONFIG_DIR"
-  ensure_safe_write_file_path "config file" "$CONFIG_JSON"
-  echo '{ "gateway": { "mode": "local" } }' >"$CONFIG_JSON"
-  chmod 600 "$CONFIG_JSON" 2>/dev/null || true
+  (
+    umask 077
+    write_file_atomically "$CONFIG_JSON" 600 <<'JSON'
+{ "gateway": { "mode": "local" } }
+JSON
+  )
   echo "Created $CONFIG_JSON (minimal gateway.mode=local)." >&2
 fi
+sync_local_control_ui_origins "$CONFIG_JSON" "$HOST_GATEWAY_PORT"
 
 PODMAN_USERNS="${OPENCLAW_PODMAN_USERNS:-keep-id}"
 USERNS_ARGS=()
@@ -305,9 +510,6 @@ else
   echo "Starting container without --user (OPENCLAW_PODMAN_USERNS=$PODMAN_USERNS), mounts may require ownership fixes." >&2
 fi
 
-ENV_FILE_ARGS=()
-[[ -f "$ENV_FILE" ]] && ENV_FILE_ARGS+=(--env-file "$ENV_FILE")
-
 SELINUX_MOUNT_OPTS=""
 if [[ -z "${OPENCLAW_BIND_MOUNT_OPTIONS:-}" ]]; then
   if [[ "$(uname -s 2>/dev/null)" == "Linux" ]] && command -v getenforce >/dev/null 2>&1; then
@@ -322,41 +524,51 @@ else
 fi
 
 if [[ "$RUN_SETUP" == true ]]; then
-  exec podman run --pull="$PODMAN_PULL" --rm -it \
+  TOKEN_ENV_FILE="$(create_token_env_file "$ENV_FILE" "$OPENCLAW_GATEWAY_TOKEN")"
+  podman run --pull="$PODMAN_PULL" --rm -it \
     --init \
     "${USERNS_ARGS[@]}" "${RUN_USER_ARGS[@]}" \
     -e HOME=/home/node -e TERM=xterm-256color -e BROWSER=echo \
     -e NPM_CONFIG_CACHE=/home/node/.openclaw/.npm \
-    -e NPM_CONFIG_PREFIX=/home/node/.openclaw/.npm-global \
-    -e PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/home/node/.openclaw/.npm-global/bin \
     -e OPENCLAW_NO_RESPAWN=1 \
-    -e OPENCLAW_GATEWAY_TOKEN="$OPENCLAW_GATEWAY_TOKEN" \
+    --env-file "$TOKEN_ENV_FILE" \
     -v "$CONFIG_DIR:/home/node/.openclaw:rw${SELINUX_MOUNT_OPTS}" \
     -v "$WORKSPACE_DIR:/home/node/.openclaw/workspace:rw${SELINUX_MOUNT_OPTS}" \
-    "${ENV_FILE_ARGS[@]}" \
     "$OPENCLAW_IMAGE" \
     node dist/index.js onboard "$@"
+  exit 0
 fi
 
+TOKEN_ENV_FILE="$(create_token_env_file "$ENV_FILE" "$OPENCLAW_GATEWAY_TOKEN")"
 podman run --pull="$PODMAN_PULL" -d --replace \
   --name "$CONTAINER_NAME" \
   --init \
   "${USERNS_ARGS[@]}" "${RUN_USER_ARGS[@]}" \
   -e HOME=/home/node -e TERM=xterm-256color \
   -e NPM_CONFIG_CACHE=/home/node/.openclaw/.npm \
-  -e NPM_CONFIG_PREFIX=/home/node/.openclaw/.npm-global \
-  -e PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/home/node/.openclaw/.npm-global/bin \
   -e OPENCLAW_NO_RESPAWN=1 \
-  -e OPENCLAW_GATEWAY_TOKEN="$OPENCLAW_GATEWAY_TOKEN" \
-  "${ENV_FILE_ARGS[@]}" \
+  --env-file "$TOKEN_ENV_FILE" \
   -v "$CONFIG_DIR:/home/node/.openclaw:rw${SELINUX_MOUNT_OPTS}" \
   -v "$WORKSPACE_DIR:/home/node/.openclaw/workspace:rw${SELINUX_MOUNT_OPTS}" \
-  -p "${HOST_GATEWAY_PORT}:18789" \
-  -p "${HOST_BRIDGE_PORT}:18790" \
+  -p "${PUBLISH_HOST}:${HOST_GATEWAY_PORT}:18789" \
+  -p "${PUBLISH_HOST}:${HOST_BRIDGE_PORT}:18790" \
   "$OPENCLAW_IMAGE" \
   node dist/index.js gateway --bind "$GATEWAY_BIND" --port 18789
 
 echo "Container $CONTAINER_NAME started. Dashboard: http://127.0.0.1:${HOST_GATEWAY_PORT}/"
 echo "Host CLI: openclaw --container $CONTAINER_NAME dashboard --no-open"
 echo "Logs: podman logs -f $CONTAINER_NAME"
-echo "For auto-start/restarts, use: ./scripts/podman/setup.sh --quadlet (Quadlet + systemd user service)."
+if [[ "$PLATFORM_NAME" == "Darwin" ]]; then
+  echo "macOS Podman note: if Control UI login hits device-auth errors, prefer the SSH-tunnel or Tailscale paths in docs/install/podman.md."
+  echo "Local-safe workaround:"
+  echo "  OPENCLAW_CONTAINER=$CONTAINER_NAME openclaw dashboard --no-open"
+  echo "  One-time setup:"
+  echo "    OPENCLAW_CONTAINER=$CONTAINER_NAME openclaw config set gateway.controlUi.allowedOrigins '[\"http://127.0.0.1:18789\",\"http://localhost:18789\",\"http://127.0.0.1:28889\",\"http://localhost:28889\"]' --strict-json"
+  echo "    podman restart $CONTAINER_NAME"
+  echo "  ssh -N -i ~/.local/share/containers/podman/machine/machine -p <podman-vm-ssh-port> -L 28889:127.0.0.1:18789 core@127.0.0.1"
+  echo "  Then open http://127.0.0.1:28889/"
+  echo "  Note: find <podman-vm-ssh-port> with: podman system connection list"
+fi
+if [[ "$PLATFORM_NAME" == "Linux" ]]; then
+  echo "For auto-start/restarts, use: ./scripts/podman/setup.sh --quadlet (Quadlet + systemd user service)."
+fi
