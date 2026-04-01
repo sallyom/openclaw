@@ -66,4 +66,8 @@ export type EmbeddedRunAttemptResult = {
   clientToolCall?: { name: string; params: Record<string, unknown> };
   /** True when sessions_yield tool was called during this attempt. */
   yieldDetected?: boolean;
+  /** The full system prompt text sent to the model. */
+  systemPromptText?: string;
+  /** Timestamp (ms) when the first token arrived from the model. */
+  firstTokenAt?: number;
 };

@@ -3952,14 +3952,16 @@ module.exports = {
       expect(record?.status).toBe("loaded");
 
       emitDiagnosticEvent({
-        type: "model.usage",
+        type: "model.inference",
         sessionKey: "agent:main:test:dm:peer",
+        provider: "openai",
+        model: "gpt-5.4",
         usage: { total: 1 },
       });
 
       expect((globalThis as Record<string, unknown>)[seenKey]).toEqual([
         {
-          type: "model.usage",
+          type: "model.inference",
           sessionKey: "agent:main:test:dm:peer",
         },
       ]);

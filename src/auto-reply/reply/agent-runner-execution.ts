@@ -85,7 +85,12 @@ export type AgentRunLoopResult =
       /** Payload keys sent directly (not via pipeline) during tool flush. */
       directlySentBlockKeys?: Set<string>;
     }
-  | { kind: "final"; payload: ReplyPayload };
+  | {
+      kind: "final";
+      runId: string;
+      payload: ReplyPayload;
+      errorInfo?: { message: string; errorType: string };
+    };
 
 /**
  * Build a human-friendly rate-limit message from a FallbackSummaryError.
@@ -602,9 +607,11 @@ export async function runAgentTurnWithFallback(params: {
         didResetAfterCompactionFailure = true;
         return {
           kind: "final",
+          runId,
           payload: {
             text: "⚠️ Context limit exceeded. I've reset our conversation to start fresh - please try again.\n\nTo prevent this, increase your compaction buffer by setting `agents.defaults.compaction.reserveTokensFloor` to 20000 or higher in your config.",
           },
+          errorInfo: { message: embeddedError.message, errorType: "context_overflow" },
         };
       }
       if (embeddedError?.kind === "role_ordering") {
@@ -612,9 +619,11 @@ export async function runAgentTurnWithFallback(params: {
         if (didReset) {
           return {
             kind: "final",
+            runId,
             payload: {
               text: "⚠️ Message ordering conflict. I've reset the conversation - please try again.",
             },
+            errorInfo: { message: embeddedError.message, errorType: "role_ordering" },
           };
         }
       }
@@ -641,8 +650,13 @@ export async function runAgentTurnWithFallback(params: {
               "The requested model may be temporarily unavailable. Please try again shortly.";
           return {
             kind: "final",
+            runId,
             payload: {
               text: switchErrorText,
+            },
+            errorInfo: {
+              message: "model switch could not be completed",
+              errorType: "model_switch_failed",
             },
           };
         }
@@ -672,9 +686,11 @@ export async function runAgentTurnWithFallback(params: {
         didResetAfterCompactionFailure = true;
         return {
           kind: "final",
+          runId,
           payload: {
             text: "⚠️ Context limit exceeded during compaction. I've reset our conversation to start fresh - please try again.\n\nTo prevent this, increase your compaction buffer by setting `agents.defaults.compaction.reserveTokensFloor` to 20000 or higher in your config.",
           },
+          errorInfo: { message, errorType: "compaction_failure" },
         };
       }
       if (isRoleOrderingError) {
@@ -682,9 +698,11 @@ export async function runAgentTurnWithFallback(params: {
         if (didReset) {
           return {
             kind: "final",
+            runId,
             payload: {
               text: "⚠️ Message ordering conflict. I've reset the conversation - please try again.",
             },
+            errorInfo: { message, errorType: "role_ordering" },
           };
         }
       }
@@ -728,9 +746,11 @@ export async function runAgentTurnWithFallback(params: {
 
         return {
           kind: "final",
+          runId,
           payload: {
             text: "⚠️ Session history was corrupted. I've reset the conversation - please try again!",
           },
+          errorInfo: { message, errorType: "session_corruption" },
         };
       }
 
@@ -773,8 +793,17 @@ export async function runAgentTurnWithFallback(params: {
 
       return {
         kind: "final",
+        runId,
         payload: {
           text: fallbackText,
+        },
+        errorInfo: {
+          message,
+          errorType: isContextOverflow
+            ? "context_overflow"
+            : isRoleOrderingError
+              ? "role_ordering"
+              : "unknown",
         },
       };
     }
@@ -792,6 +821,7 @@ export async function runAgentTurnWithFallback(params: {
     if (isContextOverflowError(errorMsg)) {
       return {
         kind: "final",
+        runId,
         payload: {
           text: "⚠️ Context overflow — this conversation is too large for the model. Use /new to start a fresh session.",
         },

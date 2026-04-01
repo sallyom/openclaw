@@ -47,6 +47,8 @@ export type {
   MediaUnderstandingProviderPlugin,
   OpenClawPluginApi,
   OpenClawPluginConfigSchema,
+  OpenClawPluginService,
+  OpenClawPluginServiceContext,
   PluginLogger,
   ProviderAuthContext,
   ProviderAuthResult,
@@ -70,7 +72,29 @@ export type { HookEntry } from "../hooks/types.js";
 export type { ReplyPayload } from "../auto-reply/types.js";
 export type { WizardPrompter } from "../wizard/prompts.js";
 export type { ContextEngineFactory } from "../context-engine/registry.js";
-export type { DiagnosticEventPayload } from "../infra/diagnostic-events.js";
+export type {
+  DiagnosticEventPayload,
+  DiagnosticHeartbeatEvent,
+  DiagnosticInferenceEvent,
+  DiagnosticInferenceStartedEvent,
+  DiagnosticLaneDequeueEvent,
+  DiagnosticLaneEnqueueEvent,
+  DiagnosticMessageProcessedEvent,
+  DiagnosticMessageQueuedEvent,
+  DiagnosticRunAttemptEvent,
+  DiagnosticRunCompletedEvent,
+  DiagnosticRunStartedEvent,
+  DiagnosticSessionState,
+  DiagnosticSessionStateEvent,
+  DiagnosticSessionStuckEvent,
+  DiagnosticToolExecutionEvent,
+  DiagnosticWebhookErrorEvent,
+  DiagnosticWebhookProcessedEvent,
+  DiagnosticWebhookReceivedEvent,
+  GenAiMessage,
+  GenAiPart,
+  GenAiToolDef,
+} from "../infra/diagnostic-events.js";
 export type {
   ContextEngine,
   ContextEngineInfo,
@@ -81,7 +105,15 @@ export type {
   TranscriptRewriteResult,
 } from "../context-engine/types.js";
 
+export { resolveAckReaction, resolveAgentIdentity } from "../agents/identity.js";
 export { emptyPluginConfigSchema } from "../plugins/config-schema.js";
 export { registerContextEngine } from "../context-engine/registry.js";
 export { delegateCompactionToRuntime } from "../context-engine/delegate.js";
-export { onDiagnosticEvent } from "../infra/diagnostic-events.js";
+export {
+  emitDiagnosticEvent,
+  isDiagnosticsEnabled,
+  onDiagnosticEvent,
+} from "../infra/diagnostic-events.js";
+export { registerLogTransport } from "../logging/logger.js";
+export { redactSensitiveText } from "../logging/redact.js";
+export { resolveAgentIdFromSessionKey } from "../routing/session-key.js";

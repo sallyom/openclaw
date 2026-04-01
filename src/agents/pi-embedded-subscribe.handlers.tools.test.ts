@@ -36,6 +36,8 @@ function createTestContext(): {
     state: {
       toolMetaById: new Map<string, ToolCallSummary>(),
       toolMetas: [],
+      toolStartTimeById: new Map<string, number>(),
+      toolArgsById: new Map<string, Record<string, unknown> | undefined>(),
       toolSummaryById: new Set<string>(),
       pendingMessagingTargets: new Map<string, MessagingToolSend>(),
       pendingMessagingTexts: new Map<string, string>(),

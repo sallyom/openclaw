@@ -10,12 +10,16 @@ import { DEFAULT_CONTEXT_TOKENS } from "../../agents/defaults.js";
 import { runWithModelFallback } from "../../agents/model-fallback.js";
 import { isCliProvider } from "../../agents/model-selection.js";
 import { runEmbeddedPiAgent } from "../../agents/pi-embedded.js";
+import { derivePromptTokens, hasNonzeroUsage } from "../../agents/usage.js";
 import type { SessionEntry } from "../../config/sessions.js";
 import type { TypingMode } from "../../config/types.js";
 import { logVerbose } from "../../globals.js";
 import { registerAgentRunContext } from "../../infra/agent-events.js";
+import { emitDiagnosticEvent, isDiagnosticsEnabled } from "../../infra/diagnostic-events.js";
+import { logMessageQueued, logMessageProcessed } from "../../logging/diagnostic.js";
 import { defaultRuntime } from "../../runtime.js";
 import { isInternalMessageChannel } from "../../utils/message-channel.js";
+import { estimateUsageCost, resolveModelCostConfig } from "../../utils/usage-format.js";
 import { stripHeartbeatToken } from "../heartbeat.js";
 import type { OriginatingChannelType } from "../templating.js";
 import { isSilentReplyText, SILENT_REPLY_TOKEN } from "../tokens.js";
@@ -27,7 +31,8 @@ import {
   resolveOriginMessageProvider,
   resolveOriginMessageTo,
 } from "./origin-routing.js";
-import { refreshQueuedFollowupSession, type FollowupRun } from "./queue.js";
+import type { FollowupRun } from "./queue.js";
+import { refreshQueuedFollowupSession } from "./queue.js";
 import {
   applyReplyThreading,
   filterMessagingToolDuplicates,
@@ -135,6 +140,21 @@ export function createFollowupRunner(params: {
   };
 
   return async (queued: FollowupRun) => {
+    const diagnosticsEnabled = isDiagnosticsEnabled(queued.run.config);
+    const channel = queued.originatingChannel ?? queued.run.messageProvider?.toLowerCase();
+    const runStartedAt = diagnosticsEnabled ? Date.now() : 0;
+    let outcome: "completed" | "error" = "completed";
+    let outcomeError: string | undefined;
+
+    // Create root trace span so child spans (agent turn, inference, tools) nest under it.
+    if (diagnosticsEnabled && queued.run.sessionKey) {
+      logMessageQueued({
+        sessionKey: queued.run.sessionKey,
+        channel,
+        source: "followup",
+      });
+    }
+
     try {
       const runId = crypto.randomUUID();
       const shouldSurfaceToControlUi = isInternalMessageChannel(
@@ -269,6 +289,24 @@ export function createFollowupRunner(params: {
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
         defaultRuntime.error?.(`Followup agent failed before reply: ${message}`);
+        outcome = "error";
+        outcomeError = message;
+        if (diagnosticsEnabled) {
+          emitDiagnosticEvent({
+            type: "run.completed",
+            runId,
+            sessionKey: queued.run.sessionKey,
+            sessionId: queued.run.sessionId,
+            channel,
+            provider: queued.run.provider,
+            model: queued.run.model,
+            usage: {},
+            durationMs: Date.now() - runStartedAt,
+            operationName: "chat",
+            error: message,
+            errorType: err instanceof Error ? err.constructor.name : "UnknownError",
+          });
+        }
         return;
       }
 
@@ -299,6 +337,54 @@ export function createFollowupRunner(params: {
             queued.run.config,
           ),
           logLabel: "followup",
+        });
+      }
+
+      // Emit run.completed so the agent turn span is properly ended with usage data.
+      if (diagnosticsEnabled) {
+        const input = usage?.input;
+        const output = usage?.output;
+        const cacheRead = usage?.cacheRead;
+        const cacheWrite = usage?.cacheWrite;
+        const promptTokens = derivePromptTokens(usage);
+        const totalTokens =
+          usage?.total ??
+          (typeof promptTokens === "number" && typeof output === "number"
+            ? promptTokens + output
+            : undefined);
+        const costConfig = resolveModelCostConfig({
+          provider: fallbackProvider,
+          model: modelUsed,
+          config: queued.run.config,
+        });
+        const costUsd = hasNonzeroUsage(usage)
+          ? estimateUsageCost({ usage, cost: costConfig })
+          : undefined;
+
+        emitDiagnosticEvent({
+          type: "run.completed",
+          runId,
+          sessionKey: queued.run.sessionKey,
+          sessionId: queued.run.sessionId,
+          channel,
+          provider: fallbackProvider,
+          model: modelUsed,
+          usage: {
+            input,
+            output,
+            cacheRead,
+            cacheWrite,
+            promptTokens,
+            total: totalTokens,
+          },
+          context: {
+            limit: contextTokensUsed,
+            used: totalTokens,
+          },
+          costUsd,
+          durationMs: Date.now() - runStartedAt,
+          operationName: "chat",
+          responseModel: runResult.meta.agentMeta?.model,
         });
       }
 
@@ -407,6 +493,18 @@ export function createFollowupRunner(params: {
       // indefinitely until the TTL expires).
       typing.markRunComplete();
       typing.markDispatchIdle();
+
+      // End the root trace span created by logMessageQueued.
+      if (diagnosticsEnabled && queued.run.sessionKey) {
+        logMessageProcessed({
+          channel: channel ?? "unknown",
+          sessionKey: queued.run.sessionKey,
+          sessionId: queued.run.sessionId,
+          durationMs: Date.now() - runStartedAt,
+          outcome,
+          error: outcomeError,
+        });
+      }
     }
   };
 }

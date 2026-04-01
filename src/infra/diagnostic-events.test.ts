@@ -24,8 +24,9 @@ describe("diagnostic-events", () => {
     });
 
     emitDiagnosticEvent({
-      type: "model.usage",
-      usage: { total: 1 },
+      type: "run.attempt",
+      runId: "run-1",
+      attempt: 1,
     });
     emitDiagnosticEvent({
       type: "session.state",
@@ -34,7 +35,7 @@ describe("diagnostic-events", () => {
     stop();
 
     expect(events).toEqual([
-      { seq: 1, ts: 111, type: "model.usage" },
+      { seq: 1, ts: 111, type: "run.attempt" },
       { seq: 2, ts: 222, type: "session.state" },
     ]);
   });

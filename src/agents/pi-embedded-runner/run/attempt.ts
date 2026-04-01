@@ -9,6 +9,7 @@ import {
 } from "@mariozechner/pi-coding-agent";
 import { resolveHeartbeatPrompt } from "../../../auto-reply/heartbeat.js";
 import { resolveChannelCapabilities } from "../../../config/channel-capabilities.js";
+import { emitDiagnosticEvent } from "../../../infra/diagnostic-events.js";
 import { getMachineDisplayName } from "../../../infra/machine-name.js";
 import {
   ensureGlobalUndiciEnvProxyDispatcher,
@@ -130,6 +131,7 @@ import { dropThinkingBlocks } from "../thinking.js";
 import { collectAllowedToolNames } from "../tool-name-allowlist.js";
 import { installToolResultContextGuard } from "../tool-result-context-guard.js";
 import { splitSdkTools } from "../tool-split.js";
+import { createTraceContextHeadersWrapper } from "../trace-context-stream-wrapper.js";
 import { describeUnknownError, mapThinkingLevel } from "../utils.js";
 import { flushPendingToolResultsAfterIdle } from "../wait-for-idle-before-flush.js";
 import {
@@ -175,6 +177,10 @@ import {
   selectCompactionTimeoutSnapshot,
   shouldFlagCompactionTimeout,
 } from "./compaction-timeout.js";
+import {
+  buildGenAiMessagesFromContext,
+  buildGenAiToolDefsFromContext,
+} from "./diagnostic-builders.js";
 import { pruneProcessedHistoryImages } from "./history-image-prune.js";
 import { detectAndLoadPromptImages } from "./images.js";
 import { resolveLlmIdleTimeoutMs, streamWithIdleTimeout } from "./llm-idle-timeout.js";
@@ -944,6 +950,11 @@ export async function runEmbeddedAttempt(
         activeSession.agent.setTransport(agentTransportOverride);
       }
 
+      activeSession.agent.streamFn = createTraceContextHeadersWrapper(
+        activeSession.agent.streamFn,
+        params.sessionKey,
+      );
+
       if (cacheTrace) {
         cacheTrace.recordStage("session:loaded", {
           messages: activeSession.messages,
@@ -1088,6 +1099,53 @@ export async function runEmbeddedAttempt(
           idleTimeoutMs,
           (error) => idleTimeoutTrigger?.(error),
         );
+      }
+
+      const captureContent =
+        params.config?.diagnostics?.enabled === true &&
+        !!params.config?.diagnostics?.otel?.captureContent;
+      if (captureContent) {
+        // Capture the exact model request context at the point of the LLM call.
+        // This is more trustworthy than sampling AgentSession.state.messages from streaming events.
+        const inner = activeSession.agent.streamFn;
+        let callIndex = 0;
+        activeSession.agent.streamFn = ((model, context, options) => {
+          callIndex += 1;
+          emitDiagnosticEvent({
+            type: "model.inference.started",
+            runId: params.runId,
+            sessionId: activeSession.sessionId,
+            sessionKey: params.sessionKey,
+            channel: params.messageChannel,
+            provider: model.provider,
+            model: model.id,
+            operationName: "chat",
+            callIndex,
+            inputMessages: buildGenAiMessagesFromContext(
+              (context as { messages?: unknown }).messages,
+            ),
+            systemInstructions:
+              typeof (context as { systemPrompt?: unknown }).systemPrompt === "string" &&
+              (context as { systemPrompt?: string }).systemPrompt?.trim()
+                ? [
+                    {
+                      type: "text",
+                      content: String((context as { systemPrompt?: string }).systemPrompt),
+                    },
+                  ]
+                : undefined,
+            toolDefinitions: buildGenAiToolDefsFromContext((context as { tools?: unknown }).tools),
+            temperature:
+              typeof (options as { temperature?: unknown }).temperature === "number"
+                ? (options as { temperature?: number }).temperature
+                : undefined,
+            maxOutputTokens:
+              typeof (options as { maxTokens?: unknown }).maxTokens === "number"
+                ? (options as { maxTokens?: number }).maxTokens
+                : undefined,
+          });
+          return inner(model, context, options);
+        }) as typeof inner;
       }
 
       try {
@@ -1250,6 +1308,8 @@ export async function runEmbeddedAttempt(
       const subscription = subscribeEmbeddedPiSession({
         session: activeSession,
         runId: params.runId,
+        captureContent,
+        channel: params.messageChannel,
         hookRunner: getGlobalHookRunner() ?? undefined,
         verboseLevel: params.verboseLevel,
         reasoningMode: params.reasoningLevel ?? "off",
@@ -1875,6 +1935,8 @@ export async function runEmbeddedAttempt(
         // Client tool call detected (OpenResponses hosted tools)
         clientToolCall: clientToolCallDetected ?? undefined,
         yieldDetected: yieldDetected || undefined,
+        systemPromptText: systemPromptText,
+        firstTokenAt: subscription?.getFirstTokenAt?.(),
       };
     } finally {
       // Always tear down the session (and release the lock) before we leave this attempt.
