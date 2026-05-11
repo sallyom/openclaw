@@ -169,6 +169,7 @@ or npm install metadata. Those belong in your plugin code and `package.json`.
 | `modelIdNormalization`               | No       | `object`                         | Provider-owned model-id alias/prefix cleanup that must run before provider runtime loads.                                                                                                                                                       |
 | `providerEndpoints`                  | No       | `object[]`                       | Manifest-owned endpoint host/baseUrl metadata for provider routes that core must classify before provider runtime loads.                                                                                                                        |
 | `providerRequest`                    | No       | `object`                         | Cheap provider-family and request-compatibility metadata used by generic request policy before provider runtime loads.                                                                                                                          |
+| `secretProviderIntegrations`         | No       | `Record<string, object>`         | Declarative SecretRef exec provider presets that setup or install surfaces can offer without hardcoding provider-specific integrations in core.                                                                                                  |
 | `cliBackends`                        | No       | `string[]`                       | CLI inference backend ids owned by this plugin. Used for startup auto-activation from explicit config refs.                                                                                                                                     |
 | `syntheticAuthRefs`                  | No       | `string[]`                       | Provider or CLI backend refs whose plugin-owned synthetic auth hook should be probed during cold model discovery before runtime loads.                                                                                                          |
 | `nonSecretAuthMarkers`               | No       | `string[]`                       | Bundled-plugin-owned placeholder API key values that represent non-secret local, OAuth, or ambient credential state.                                                                                                                            |
@@ -1079,6 +1080,40 @@ Provider fields:
 | `family`              | `string`     | Provider family label used by generic request compatibility decisions and diagnostics. |
 | `compatibilityFamily` | `"moonshot"` | Optional provider-family compatibility bucket for shared request helpers.              |
 | `openAICompletions`   | `object`     | OpenAI-compatible completions request flags, currently `supportsStreamingUsage`.       |
+
+## secretProviderIntegrations reference
+
+Use `secretProviderIntegrations` when a plugin can publish a reusable SecretRef
+exec provider preset. OpenClaw reads this metadata before plugin runtime loads,
+materializes it into the existing `secrets.providers.<alias>` exec provider
+shape, and leaves actual secret resolution to the SecretRef runtime.
+
+```json
+{
+  "secretProviderIntegrations": {
+    "vault": {
+      "providerAlias": "vault",
+      "displayName": "Vault",
+      "source": "exec",
+      "command": "${node}",
+      "args": ["./bin/resolve-vault.mjs"],
+      "trustedDirs": ["./bin"]
+    }
+  }
+}
+```
+
+The map key is the integration id. If `providerAlias` is omitted, OpenClaw uses
+the integration id as the SecretRef provider alias. Provider aliases must match
+the normal SecretRef provider alias pattern, for example `vault` or
+`onepassword-work`.
+
+Only `source: "exec"` presets are currently supported. `command` is required
+and may be `${node}`; relative commands, `./` or `../` args, and relative
+`trustedDirs` are resolved from the plugin root. Other exec provider options
+such as `timeoutMs`, `maxOutputBytes`, `jsonOnly`, `env`, `passEnv`,
+`allowInsecurePath`, and `allowSymlinkCommand` pass through to the normal
+SecretRef exec provider config.
 
 ## modelPricing reference
 
