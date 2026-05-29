@@ -39,6 +39,8 @@ import {
   isPluginIntegrationSecretProviderConfig,
   resolveSecretProviderIntegrationConfig,
 } from "../secrets/provider-integrations.js";
+import { collectPluginConfigAssignments } from "../secrets/runtime-config-collectors-plugins.js";
+import { createResolverContext } from "../secrets/runtime-shared.js";
 import { discoverConfigSecretTargets } from "../secrets/target-registry.js";
 import {
   emitDaemonInstallRuntimeWarning,
@@ -161,7 +163,7 @@ function collectAuthProfileServiceEnvVars(params: {
 
 type ExecSecretRefPassEnvSource = {
   ref: SecretRef;
-  warningTitle: "Config SecretRef" | "Auth profile";
+  warningTitle: "Config SecretRef" | "Auth profile" | "Plugin config SecretRef";
 };
 
 function collectConfigSecretRefServiceEnvVars(params: {
@@ -248,6 +250,14 @@ function collectExecSecretRefPassEnvServiceEnvVars(params: {
       sources.push({ ref, warningTitle: "Auth profile" });
     }
   }
+  for (const ref of collectPluginConfigSecretRefs({
+    env: params.env,
+    config: params.config,
+  })) {
+    if (ref.source === "exec") {
+      sources.push({ ref, warningTitle: "Plugin config SecretRef" });
+    }
+  }
   for (const { ref, warningTitle } of sources) {
     const provider = params.config.secrets?.providers?.[ref.provider];
     if (!provider || provider.source !== "exec") {
@@ -306,6 +316,22 @@ function collectExecSecretRefPassEnvServiceEnvVars(params: {
     }
   }
   return entries;
+}
+
+function collectPluginConfigSecretRefs(params: {
+  env: Record<string, string | undefined>;
+  config: OpenClawConfig;
+}): SecretRef[] {
+  const context = createResolverContext({
+    sourceConfig: params.config,
+    env: params.env as NodeJS.ProcessEnv,
+  });
+  collectPluginConfigAssignments({
+    config: params.config,
+    defaults: params.config.secrets?.defaults,
+    context,
+  });
+  return context.assignments.map((assignment) => assignment.ref);
 }
 
 function mergeServicePath(
