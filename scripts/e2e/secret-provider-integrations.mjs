@@ -246,28 +246,28 @@ function baseConfig(port, overrides = {}) {
       bind: "loopback",
       auth: { mode: "token", token: proofSecretRef("gateway/token") },
       controlUi: { enabled: false },
-      ...(overrides.gateway ?? {}),
+      ...overrides.gateway,
     },
     plugins: {
       enabled: true,
       entries: {
         [PLUGIN_ID]: { enabled: true },
       },
-      ...(overrides.plugins ?? {}),
+      ...overrides.plugins,
     },
     secrets: {
       providers: {
         [PROVIDER_ALIAS]: proofProviderConfig(),
       },
-      ...(overrides.secrets ?? {}),
+      ...overrides.secrets,
     },
     agents: {
       defaults: {
         model: "openai/gpt-5.4-nano",
       },
-      ...(overrides.agents ?? {}),
+      ...overrides.agents,
     },
-    ...(overrides.root ?? {}),
+    ...overrides.root,
   };
 }
 
@@ -972,6 +972,7 @@ async function p8ManagedServiceEnvProof() {
     });
     let installAttempted = false;
     let proofError;
+    let cleanupError;
     const managerEnv = serviceManagerEnv(envCtx.env);
     try {
       const callsBeforeInstall = readJson(envCtx.env.PROOF_SECRET_STORE_PATH).calls;
@@ -1010,20 +1011,24 @@ async function p8ManagedServiceEnvProof() {
       }
     } catch (error) {
       proofError = error;
-      throw error;
     } finally {
       if (installAttempted) {
         try {
           await uninstallManagedGateway(managerEnv);
-        } catch (cleanupError) {
-          if (!proofError) {
-            throw cleanupError;
+        } catch (error) {
+          cleanupError = error;
+          if (proofError) {
+            const message = error instanceof Error ? error.message : String(error);
+            console.error(`[cleanup] ${scrub(message)}`);
           }
-          const message =
-            cleanupError instanceof Error ? cleanupError.message : String(cleanupError);
-          console.error(`[cleanup] ${scrub(message)}`);
         }
       }
+    }
+    if (proofError) {
+      throw proofError;
+    }
+    if (cleanupError) {
+      throw cleanupError;
     }
   });
   return "real managed service install preserved auth-profile exec provider passEnv";
@@ -1115,7 +1120,7 @@ async function p9ProviderVariants() {
       const port = await allocatePort();
       const ctx = scenario.before?.() ?? {};
       writeJson(envCtx.env.OPENCLAW_CONFIG_PATH, scenario.config(port, ctx));
-      const childEnv = { ...envCtx.env, ...(scenario.env ?? {}) };
+      const childEnv = { ...envCtx.env, ...scenario.env };
       const scenarioCtx = { ...envCtx, env: childEnv };
       const gateway = await startGateway(scenarioCtx, port, scenario.token);
       try {
