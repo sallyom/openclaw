@@ -1425,7 +1425,11 @@ async function p17StaticMetadataAlignment() {
     ) {
       throw new Error("secrets configure help is missing expected provider/exec flags");
     }
-    await runCommand("git", ["diff", "--check"], { timeoutMs: 30000 });
+    await runCommand(
+      "node",
+      ["--import", "tsx", "scripts/generate-config-doc-baseline.ts", "--check"],
+      { timeoutMs: 60000 },
+    );
   } finally {
     await cleanupEnv(envCtx.root);
   }
