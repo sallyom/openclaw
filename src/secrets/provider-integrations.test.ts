@@ -115,7 +115,7 @@ describe("secret provider integration presets", () => {
       providerConfig: {
         source: "exec",
         command: process.execPath,
-        args: [path.join(rootDir, "bin", "resolve.mjs"), "--profile", "work"],
+        args: [fs.realpathSync(path.join(rootDir, "bin", "resolve.mjs")), "--profile", "work"],
         timeoutMs: 3000,
         noOutputTimeoutMs: 3000,
         maxOutputBytes: 4096,
@@ -182,7 +182,7 @@ describe("secret provider integration presets", () => {
       providerConfig: {
         source: "exec",
         command: process.execPath,
-        args: [path.join(rootDir, "resolve.mjs"), "ok"],
+        args: [fs.realpathSync(path.join(rootDir, "resolve.mjs")), "ok"],
         trustedDirs: [path.dirname(process.execPath), rootDir],
         allowInsecurePath: true,
         passEnv: ["GOOD_ENV"],
@@ -815,6 +815,17 @@ describe("secret provider integration presets", () => {
         providerConfig: pluginIntegrationProviderConfig("linked-root-secrets", "vault"),
       },
     ]);
+    const resolved = resolveSecretProviderIntegrationConfig({
+      manifestRegistry: registry,
+      providerAlias: "vault",
+      providerConfig: pluginIntegrationProviderConfig("linked-root-secrets", "vault"),
+    });
+    expect(resolved.ok).toBe(true);
+    if (resolved.ok) {
+      expect(resolved.providerConfig.args?.[0]).toBe(
+        fs.realpathSync(path.join(realRoot, "bin", "resolve.mjs")),
+      );
+    }
   });
 
   it.skipIf(process.platform === "win32")(

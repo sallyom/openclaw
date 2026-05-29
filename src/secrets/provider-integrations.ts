@@ -190,7 +190,7 @@ function resolveNodeEntrypointArg(params: {
     ) {
       return undefined;
     }
-    return resolved;
+    return realpath;
   } catch {
     return undefined;
   }
