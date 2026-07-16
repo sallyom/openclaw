@@ -468,6 +468,7 @@ export function createGatewayWorkerPlacementRuntime(params: GatewayWorkerPlaceme
     environments: params.environments,
     placements: params.placements,
     admitNewPlacements: params.admitNewPlacements,
+    requiredProfileId: () => getRuntimeConfig().cloudWorkers?.requiredProfile,
     resolveWorkspacePath,
     redispatchReclaimed: createReclaimedPlacementRedispatch({
       environments: params.environments,

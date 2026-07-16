@@ -1,17 +1,17 @@
 ---
-summary: "Dispatch sessions to throwaway cloud machines: provisioning, worker runtime, proxied inference, and streaming results"
+summary: "Dispatch sessions to throwaway cloud machines: provisioning, worker runtime, credential-free inference, and streaming results"
 title: "Cloud Workers"
 sidebarTitle: "Cloud Workers"
 read_when: "You want agent sessions to run on ephemeral cloud machines instead of the Gateway host, or you are configuring cloudWorkers profiles."
 status: active
 ---
 
-Cloud workers let a session run its agent loop on a throwaway cloud machine while everything about the session stays where it always was: visible in the sidebar, streaming live, with the transcript owned by the Gateway. The Gateway leases a box, installs a pinned copy of OpenClaw on it, syncs the session's workspace over, and hands the turn loop to a restricted `openclaw worker` process. Model calls are proxied back through the Gateway, so provider credentials never leave your machine, and prompt caching keeps working because the provider sees one continuous stream.
+Cloud workers let a session run its agent loop in a throwaway remote environment while everything about the session stays where it always was: visible in the sidebar, streaming live, with the transcript owned by the Gateway. The Gateway leases an environment, installs a pinned copy of OpenClaw in it, syncs the session's workspace over, and hands the turn loop to a restricted `openclaw worker` process. Model calls are proxied back through the Gateway by default, so provider credentials never enter the worker, and prompt caching keeps working because the provider sees one continuous stream. A worker provider can instead advertise a credential-free, lease-local inference route; if the OpenShell plugin is enabled, its provider supports this with `inference.local`.
 
 When the work is done (or the box dies), the machine is discarded. The durable state — transcript, workspace commits, placement records — lives with the Gateway.
 
 <Note>
-Cloud workers are opt-in and invisible until you configure a profile. Unconfigured installs see no new RPCs, config, or UI.
+Cloud workers are opt-in and invisible until you configure a profile. Unconfigured installs see no new RPCs, config, or UI. Set `requiredProfile` when the Gateway must reject local execution and use one profile for every agent turn.
 </Note>
 
 ## What runs where
@@ -19,7 +19,8 @@ Cloud workers are opt-in and invisible until you configure a profile. Unconfigur
 | Concern                                                 | Location                                                                         |
 | ------------------------------------------------------- | -------------------------------------------------------------------------------- |
 | Agent loop + tools (`exec`, `read`, `write`, `edit`, …) | Cloud worker box                                                                 |
-| Model inference and provider credentials                | Gateway (proxied by `{provider, model}` reference)                               |
+| Model inference                                         | Gateway proxy by default; optionally a provider-advertised worker-local route    |
+| Model provider credentials                              | Gateway by default; OpenShell Gateway for an enabled plugin's `inference.local`  |
 | Transcript (durable, session store)                     | Gateway                                                                          |
 | Live streaming into the sidebar                         | Gateway fanout, fed by the worker's replayable event stream                      |
 | Workspace git history                                   | Authored on the box credential-free; the Gateway adopts commits and owns push/PR |
@@ -28,7 +29,7 @@ The box needs no inbound ports except `sshd`: the Gateway connects out via pinne
 
 ## Requirements
 
-- A worker provider plugin. The bundled `crabbox` plugin drives the [Crabbox](https://github.com/openclaw/crabbox) CLI, which brokers leases across cloud backends (AWS, Hetzner, and others). The `crabbox` binary must be on `PATH` (or set `settings.binary`) with provider credentials already configured. AWS admission requires Crabbox 0.38.1 or newer.
+- A worker provider plugin. The bundled `crabbox` plugin drives the [Crabbox](https://github.com/openclaw/crabbox) CLI, which brokers leases across cloud backends (AWS, Hetzner, and others). When installed and enabled, the `openshell` plugin creates one OpenShell sandbox per worker environment through an authenticated OpenShell CLI. OpenShell must be newer than v0.0.91. The selected provider binary must be installed and authenticated before dispatch.
 - For Crabbox AWS workers, the effective `aws.instanceProfile` must be empty. The provider checks `crabbox config show --json` before allocation, then requires `crabbox inspect --json` to report `providerMetadata.instanceProfileAttached: false` from EC2 `DescribeInstances`. Leases with an instance role or without authoritative metadata are stopped and rejected.
 - Node.js on the leased machine. Bare cloud images usually lack it — install it in the profile's `setup` command.
 - A session with a session-owned managed worktree (create one with `worktree: true`). Dispatch moves that worktree's contents; plain directories sync as a manifest mirror.
@@ -59,12 +60,82 @@ Add a profile under `cloudWorkers.profiles` in `openclaw.json`:
 
 Profile fields:
 
-| Key        | Meaning                                                                                                                                                                                                                                        |
-| ---------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `provider` | Worker provider id registered by a plugin (`crabbox` for the bundled plugin).                                                                                                                                                                  |
-| `install`  | `bundle` (default) ships the running Gateway's build; `npm` installs the exact released Gateway version with pinned integrity. `npm` requires the Gateway to run from a packaged release.                                                      |
-| `settings` | Provider-owned JSON. For crabbox: `provider` (backend), `class` (machine class), `ttl`, `idleTimeout` (Go durations), optional `setup` and absolute `binary` path. OpenClaw forces public SSH and disables managed Tailscale for these leases. |
-| `lifetime` | Optional stored policy (`idleTimeoutMinutes`, `maxLifetimeMinutes`).                                                                                                                                                                           |
+| Key               | Meaning                                                                                                                                                                                                                                        |
+| ----------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `provider`        | Worker provider id registered by a plugin (`crabbox` for the bundled plugin).                                                                                                                                                                  |
+| `install`         | `bundle` (default) ships the running Gateway's build; `npm` installs the exact released Gateway version with pinned integrity. `npm` requires the Gateway to run from a packaged release.                                                      |
+| `settings`        | Provider-owned JSON. For crabbox: `provider` (backend), `class` (machine class), `ttl`, `idleTimeout` (Go durations), optional `setup` and absolute `binary` path. OpenClaw forces public SSH and disables managed Tailscale for these leases. |
+| `lifetime`        | Optional stored policy (`idleTimeoutMinutes`, `maxLifetimeMinutes`).                                                                                                                                                                           |
+| `requiredProfile` | Optional profile id that the Gateway requires for every agent turn. It must name a configured profile. Local execution, other cloud profiles, and reclaiming a session back to local execution are rejected.                                   |
+
+To require one worker profile gateway-wide, set `requiredProfile` alongside the profile map:
+
+```json
+{
+  "cloudWorkers": {
+    "requiredProfile": "openshell",
+    "profiles": {
+      "openshell": {
+        "provider": "openshell"
+      }
+    }
+  }
+}
+```
+
+### OpenShell workers
+
+If the OpenShell plugin is installed and enabled, use provider `openshell` to place each dispatched session in its own OpenShell sandbox:
+
+<Note>
+The `openshell` worker provider is registered by `@openclaw/openshell-sandbox`; it is unavailable when that plugin is absent or disabled.
+</Note>
+
+```json
+{
+  "cloudWorkers": {
+    "profiles": {
+      "openshell": {
+        "provider": "openshell",
+        "install": "bundle",
+        "settings": {
+          "gatewayEndpoint": "https://openshell-gateway.example.com",
+          "workspace": "openclaw-workers",
+          "from": "openclaw",
+          "autoProviders": false,
+          "inference": {
+            "mode": "local",
+            "provider": "openclaw-anthropic",
+            "openclawProvider": "anthropic",
+            "model": "claude-sonnet-4-5",
+            "api": "anthropic-messages"
+          }
+        }
+      }
+    }
+  }
+}
+```
+
+OpenShell owns sandbox policy, provider attachments, inference credentials, and SSH authentication. For this delegated-worker topology, run the OpenClaw Gateway in an OpenShell sandbox with `OPENSHELL_DELEGATION_TOKEN_FILE=/run/openshell-delegation/token`. Set `settings.gatewayEndpoint` to that OpenShell Gateway's URL. The supervisor refreshes this restricted credential and the plugin uses it for OpenShell CLI calls, creating each worker with `--parent-sandbox-id "$OPENSHELL_SANDBOX_ID"`. The full supervisor JWT remains unavailable to the Gateway workload. The OpenShell server derives and enforces the parent relationship, workspace scope, child-only relay access, and inherited worker image, policy, resources, and environment; neither the Gateway nor a worker image receives an OpenShell client mTLS identity. `settings.workspace` selects an explicit workspace when set; when omitted, the plugin preserves the OpenShell CLI's ambient workspace. Use a dedicated existing workspace for each profile that needs a separate provider/model route.
+
+This does not nest the OpenShell sandbox backend. The restricted worker process runs directly in the provisioned sandbox, and general plugins are not loaded there.
+
+The provider's SSH proxy carries the normal reverse worker socket. Its delegated forwarding authority is limited to children of the Gateway sandbox; attempts to use another parent or workspace must be denied by OpenShell.
+
+Before using the local inference profile, create the provider and select the workspace-scoped `inference.local` route with the OpenShell CLI. A bare credential name reads the value from the CLI environment instead of putting it in shell history:
+
+```bash
+openshell --workspace openclaw-workers provider create --name openclaw-anthropic --type anthropic \
+  --credential ANTHROPIC_API_KEY
+openshell --workspace openclaw-workers inference set \
+  --provider openclaw-anthropic \
+  --model claude-sonnet-4-5
+```
+
+At provision time, the plugin runs `openshell --workspace <settings.workspace> inference get` against the selected OpenShell Gateway and requires its provider and model to match `settings.inference`. `provider` is the OpenShell provider record name; `openclawProvider` is the OpenClaw model provider id used by the session (for example, `anthropic` or `openai`). Both the OpenClaw provider id and model id are fixed for the placement. OpenAI Chat Completions and Responses routes use `https://inference.local/v1`; Anthropic Messages uses `https://inference.local`. The worker sends only the non-secret placeholder credential required by the SDK, and OpenShell injects the provider credential at its privacy router. The OpenClaw Gateway never receives or stores that provider credential.
+
+`settings.inference` is optional. Without it, model calls use the normal OpenClaw Gateway proxy. With it, the profile is fixed to one model and API protocol. In-session model/provider switching and fallback to another model are rejected; reclaim the placement and use another profile instead. Do not run `openshell inference set` or `openshell inference update` while placements using the profile are active: OpenShell does not currently offer a per-request route-version precondition, so OpenClaw validates route drift only when provisioning or adopting a lease.
 
 ### The setup command
 
@@ -78,6 +149,8 @@ Profile fields:
 ## Dispatching a session
 
 In the Control UI, open **New Session**, choose an agent whose configured runtime is OpenClaw, select a configured **Cloud · profile** target from the **Where** menu, and start the task. Cloud selection enables the required managed worktree automatically; the Gateway creates the session, finishes dispatch, and only then sends the first turn. The server badge in the session sidebar shows the durable placement state. Cloud targets are not offered for external CLI session catalogs.
+
+When `requiredProfile` is set, the Control UI preselects and locks that **Cloud · profile** target instead of offering Gateway, node, or alternate cloud destinations. This is presentation only: the Gateway also rejects local turns from the Control UI, CLI, channels, scheduled jobs, and direct RPC callers until the session has an active placement for that profile. Existing local sessions are not migrated automatically; create a managed-worktree session and dispatch it through the required profile. Auxiliary model probes without a durable session key do not create worker placements and retain their existing local execution path.
 
 The equivalent RPC flow is:
 
@@ -121,8 +194,8 @@ Placement moves through a durable state machine (`local → requested → provis
 - **Closed worker ingress.** Workers speak a dedicated protocol on the tunneled socket with a closed method allowlist — a worker cannot call operator RPCs.
 - **Gateway-owned tool authority.** Before every turn, the Gateway projects current profile, provider, agent, group, sender, sandbox, delegation, inherited, and runtime-cap policy over the worker's fixed coding-tool catalog. The launch envelope carries only that final closed-vocabulary subset. Explicitly capped scheduled turns reuse their trusted owner-group context without sending that identity to the box or reapplying a fresh sender overlay. Tools outside the worker catalog remain unavailable; an empty result runs with no tools.
 - **Minted credentials, hashed at rest.** Each dispatch mints a worker credential; the Gateway stores only its hash. Credential rotation and owner-epoch fencing guarantee at most one live owner per session — a stale worker that reconnects is fenced, never merged.
-- **Host-key pinning.** The provider must surface the box's SSH host key at provision time; bootstrap connects with strict pinning and fails closed without it.
-- **No standing model, forge, or cloud credentials on the box.** Model auth stays on the Gateway (inference travels by `{provider, model}` reference), workspace git commits are authored without forge credentials, and Crabbox AWS lease metadata is checked authoritatively for an instance role before setup. Keep setup commands credential-free too.
+- **Explicit SSH trust.** Direct-SSH providers must surface the box's SSH host key at provision time; bootstrap connects with strict pinning and fails closed without it. When the OpenShell plugin is enabled, it instead uses its declared provider-authenticated `ssh-proxy` transport. The Gateway's restricted delegation token scopes that transport to its server-owned child sandbox.
+- **No standing model, forge, or cloud credentials on the box.** Model auth stays on the OpenClaw Gateway for proxied inference or, when the OpenShell plugin is enabled and local inference is configured, on the OpenShell Gateway for `inference.local`; neither path places the provider credential in the worker. Workspace git commits are authored without forge credentials, and Crabbox AWS lease metadata is checked authoritatively for an instance role before setup. Keep setup commands credential-free too.
 - **Provider-owned egress.** The reverse tunnel removes any OpenClaw need for direct model access, but OpenClaw does not rewrite provider firewalls. Restrict outbound traffic in the worker provider when the task requires it.
 - **Durable, exactly-once transcripts.** The worker commits transcript batches through a compare-and-swap protocol against the session's leaf; a stale base fail-stops the run instead of duplicating or rebasing paid output.
 
@@ -130,6 +203,8 @@ Placement moves through a durable state machine (`local → requested → provis
 
 - **`sessions.dispatch` is an unknown method** — no `cloudWorkers.profiles` are configured, or the caller lacks `operator.admin`.
 - **"Cloud worker turns require the OpenClaw runtime"** — choose a model whose configured runtime is OpenClaw. External CLI runtimes such as `claude-cli` do not support worker inference.
+- **"Cloud worker local inference is fixed to …"** — for an enabled OpenShell plugin profile, the requested session provider or model differs from `settings.inference.openclawProvider` / `settings.inference.model`. Select the configured provider and model, or reclaim and dispatch with another profile.
+- **OpenShell route mismatch during dispatch** — with the OpenShell plugin enabled, run `openshell --workspace <settings.workspace> inference get` against the profile's selected Gateway, then make its provider/model match `settings.inference`. No sandbox is allocated when this validation fails.
 - **"Worker bootstrap requires Node.js on the leased host"** — add a Node install to `settings.setup` (see above).
 - **AWS instance-role attestation fails** — clear `aws.instanceProfile` (and `CRABBOX_AWS_INSTANCE_PROFILE`, if set). Install Crabbox 0.38.1 or newer; older binaries do not expose the authoritative `providerMetadata.instanceProfileAttached` contract required for AWS admission.
 - **Dispatch fails with a provider error** — the placement record and `environments.list` keep the last error, including the setup/bootstrap stderr tail. Boxes are destroyed on failure, so that tail is the primary forensic.

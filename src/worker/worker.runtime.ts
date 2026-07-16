@@ -1,6 +1,8 @@
 import { chmod, mkdtemp, realpath, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { toWorkerInferenceContext } from "./embedded-agent-transcript.runtime.js";
+import type { WorkerEmbeddedInferenceClient } from "./embedded-agent.runtime.js";
 import { buildWorkerConnectParams, type WorkerLaunchDescriptor } from "./launch-descriptor.js";
 import { createWorkerConnection, type WorkerConnectionState } from "./worker-connection.js";
 import {
@@ -85,7 +87,7 @@ export async function runWorkerDescriptor(
     runEpoch: descriptor.admission.ownerEpoch,
     initialAckedSeq: descriptor.assignment.liveEvents.ackedSeq,
   });
-  const inference = new WorkerInferenceProxyClient(connection);
+  let inference: WorkerInferenceProxyClient | undefined;
   const unsubscribeState = connection.onStateChange((state) => {
     if (state.kind === "fenced") {
       abortController.abort(new Error(`worker fenced: ${state.reason}`));
@@ -104,18 +106,36 @@ export async function runWorkerDescriptor(
       }
       throw error;
     }
-    const [{ runWorkerEmbeddedTurn }, { createWorkerInferenceStreamAdapter }] = await Promise.all([
+    const [{ runWorkerEmbeddedTurn }, { createWorkerRuntimeModel }] = await Promise.all([
       import("./embedded-agent.runtime.js"),
-      import("./inference-stream.runtime.js"),
+      import("./runtime-model.js"),
     ]);
-    const stream = createWorkerInferenceStreamAdapter({
-      client: inference,
-      sessionId: descriptor.admission.sessionId,
-      runEpoch: descriptor.admission.ownerEpoch,
-      runId: descriptor.assignment.runId,
-      turnId: descriptor.assignment.turnId,
+    const model = createWorkerRuntimeModel({
       modelRef: descriptor.assignment.modelRef,
+      inference: descriptor.assignment.inference,
     });
+    let stream: WorkerEmbeddedInferenceClient["stream"];
+    if (descriptor.assignment.inference.mode === "local") {
+      const { createWorkerLocalInferenceStream } = await import("./local-inference.runtime.js");
+      stream = createWorkerLocalInferenceStream({
+        model,
+        options: descriptor.assignment.inferenceOptions,
+        sessionId: descriptor.admission.sessionId,
+      });
+    } else {
+      inference = new WorkerInferenceProxyClient(connection);
+      const { createWorkerInferenceStreamAdapter } = await import("./inference-stream.runtime.js");
+      const proxyStream = createWorkerInferenceStreamAdapter({
+        client: inference,
+        sessionId: descriptor.admission.sessionId,
+        runEpoch: descriptor.admission.ownerEpoch,
+        runId: descriptor.assignment.runId,
+        turnId: descriptor.assignment.turnId,
+        modelRef: descriptor.assignment.modelRef,
+      });
+      stream = (request) =>
+        proxyStream({ ...request, context: toWorkerInferenceContext(request.context) });
+    }
     try {
       turnStarted = true;
       await runWorkerEmbeddedTurn({
@@ -127,6 +147,7 @@ export async function runWorkerDescriptor(
         prompt: descriptor.assignment.prompt,
         suppressPromptTranscript: descriptor.assignment.suppressPromptTranscript,
         modelRef: descriptor.assignment.modelRef,
+        model,
         initialMessages: descriptor.assignment.initialMessages,
         ...(descriptor.assignment.systemPrompt === undefined
           ? {}
@@ -186,7 +207,7 @@ export async function runWorkerDescriptor(
     }
     unsubscribeState();
     options.signal?.removeEventListener("abort", abortFromCaller);
-    inference.dispose();
+    inference?.dispose();
     live.dispose();
     await connection.stop();
     if (previousStateDir === undefined) {

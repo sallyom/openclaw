@@ -1,6 +1,6 @@
 // @vitest-environment node
 import { describe, expect, it } from "vitest";
-import { readDraftCloudProfiles } from "./discovery.ts";
+import { readDraftCloudProfileCatalog, readDraftCloudProfiles } from "./discovery.ts";
 
 describe("readDraftCloudProfiles", () => {
   it("keeps closed profile summaries in stable order", () => {
@@ -17,5 +17,17 @@ describe("readDraftCloudProfiles", () => {
       { id: "aws", providerId: "crabbox" },
       { id: "zeta", providerId: "static-ssh" },
     ]);
+  });
+
+  it("preserves the gateway-required profile separately from public profile details", () => {
+    expect(
+      readDraftCloudProfileCatalog({
+        requiredProfileId: "openshell",
+        profiles: [{ id: "openshell", providerId: "openshell" }],
+      }),
+    ).toEqual({
+      requiredProfileId: "openshell",
+      profiles: [{ id: "openshell", providerId: "openshell" }],
+    });
   });
 });

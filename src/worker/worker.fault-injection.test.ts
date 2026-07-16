@@ -347,6 +347,7 @@ class ComposedGatewayHarness {
         workspaceDir: this.root,
         modelRef: MODEL_REF,
         inferenceOptions: {},
+        inference: { mode: "gateway-proxy" },
         suppressPromptTranscript: false,
         initialMessages: [],
         transcript: { baseLeafId: params.baseLeafId ?? null, nextSeq: params.initialSeq ?? 1 },

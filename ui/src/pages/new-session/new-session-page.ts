@@ -49,6 +49,7 @@ import {
 } from "./create-params.ts";
 import {
   type BrowserTarget,
+  type DraftCloudProfileCatalog,
   type DraftCloudProfile,
   type DraftNode,
   type DraftRepositoryState,
@@ -89,6 +90,7 @@ class NewSessionPage extends OpenClawLightDomElement {
   @state() private cloudProfiles: DraftCloudProfile[] = [];
   @state() private cloudProfilesReady = false;
   @state() private cloudProfileId = "";
+  @state() private requiredCloudProfileId = "";
   @state() private message = "";
   @state() private submitting = false;
   @state() private submissionOutcomeUnknown = false;
@@ -194,18 +196,24 @@ class NewSessionPage extends OpenClawLightDomElement {
     },
   });
 
-  private applyCloudProfiles(profiles: DraftCloudProfile[]) {
-    const recovery = selectProfiles(profiles, this.gatewayClient, this.gatewayRecoveryScope);
+  private applyCloudProfiles(catalog: DraftCloudProfileCatalog) {
+    const recovery = selectProfiles(catalog, this.gatewayClient, this.gatewayRecoveryScope);
     this.cloudProfiles = recovery.profiles;
+    this.requiredCloudProfileId = catalog.requiredProfileId ?? "";
     const pendingCloud = Boolean(this.pendingCloud.sessionKey);
-    if ((!this.gatewayConnected || !this.isAdmin()) && !pendingCloud) {
+    if (this.requiredCloudProfileId && !pendingCloud) {
+      this.cloudProfileId = this.requiredCloudProfileId;
+      this.execNode = "";
+      this.worktree = true;
+      this.closeBrowser();
+    } else if ((!this.gatewayConnected || !this.isAdmin()) && !pendingCloud) {
       this.cloudProfileId = "";
       this.closeBrowser();
     }
     const selectionUnavailable =
       !pendingCloud &&
       Boolean(this.cloudProfileId) &&
-      !profiles.some((profile) => profile.id === this.cloudProfileId);
+      !recovery.profiles.some((profile) => profile.id === this.cloudProfileId);
     if (selectionUnavailable) {
       this.error = t("newSession.catalogUnavailable");
     } else if (recovery.unsupported) {
@@ -226,7 +234,7 @@ class NewSessionPage extends OpenClawLightDomElement {
       return;
     }
     if (this.cloudProfileRetryAttempt >= CLOUD_PROFILE_RETRY_DELAYS_MS.length) {
-      this.applyCloudProfiles([]);
+      this.applyCloudProfiles({ profiles: [] });
       this.cloudProfilesReady = true;
       return;
     }
@@ -301,6 +309,7 @@ class NewSessionPage extends OpenClawLightDomElement {
     this.gatewayName = "";
     this.cloudProfiles = [];
     this.cloudProfilesReady = false;
+    this.requiredCloudProfileId = "";
     this.resetCloudProfileRetry();
     this.branchesRequestToken += 1;
     this.repository = { kind: "idle" };
@@ -687,7 +696,10 @@ class NewSessionPage extends OpenClawLightDomElement {
     this.execNode = "";
     this.modelControl.reset();
     this.attachmentDraft.reset({ release: true });
-    this.cloudProfileId = "";
+    this.cloudProfileId = this.requiredCloudProfileId;
+    if (this.requiredCloudProfileId) {
+      this.worktree = true;
+    }
     if (preservePendingCloud) {
       if (!this.pendingCloud.restored) {
         this.pendingCloud.retryAllowed = false;
@@ -996,6 +1008,9 @@ class NewSessionPage extends OpenClawLightDomElement {
         !this.cloudProfiles.some((profile) => profile.id === cloudProfileId) ||
         Boolean(this.cloudRuntimeUnsupportedReason()))
     ) {
+      return false;
+    }
+    if (this.requiredCloudProfileId && cloudProfileId !== this.requiredCloudProfileId) {
       return false;
     }
     if (this.usesCustomFolder() && !this.isAdmin()) {
@@ -1341,9 +1356,9 @@ class NewSessionPage extends OpenClawLightDomElement {
     if (this.submitting || this.pendingCloud.sessionKey) {
       return;
     }
-    this.execNode = execNode;
+    this.execNode = this.requiredCloudProfileId ? "" : execNode;
     this.cancelRestoredFolderValidation();
-    if (execNode) {
+    if (this.execNode) {
       // Node sessions run on that device; a cloud worker cannot sync a node path.
       this.cloudProfileId = "";
     }
@@ -1367,7 +1382,7 @@ class NewSessionPage extends OpenClawLightDomElement {
   }
 
   private selectExecNode(execNode: string) {
-    if (this.submitting || this.pendingCloud.sessionKey) {
+    if (this.submitting || this.pendingCloud.sessionKey || this.requiredCloudProfileId) {
       return;
     }
     if (execNode === this.execNode && !this.cloudProfileId) {
@@ -1396,6 +1411,7 @@ class NewSessionPage extends OpenClawLightDomElement {
     if (
       this.submitting ||
       this.pendingCloud.sessionKey ||
+      (this.requiredCloudProfileId && profileId !== this.requiredCloudProfileId) ||
       !this.worktreeAvailable() ||
       !this.cloudProfiles.some((profile) => profile.id === profileId)
     ) {
@@ -1571,6 +1587,7 @@ class NewSessionPage extends OpenClawLightDomElement {
       gatewayName: this.gatewayName,
       cloudProfiles: this.isAdmin() ? cloudProfiles : [],
       cloudProfileId: this.cloudProfileId,
+      requiredCloudProfileId: this.requiredCloudProfileId,
       execNode: this.execNode,
       syncFolder: this.folder.trim() || this.workspacePath(),
       worktree: this.worktree,

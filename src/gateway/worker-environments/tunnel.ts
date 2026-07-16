@@ -1,8 +1,9 @@
 import { RetrySupervisor } from "../../../packages/retry/src/index.js";
 import { sleepWithAbort, type BackoffPolicy } from "../../infra/backoff.js";
-import type { WorkerSshEndpoint } from "../../plugins/types.js";
+import type { WorkerSshTransport } from "../../plugins/types.js";
 import type { SpawnResult } from "../../process/exec.js";
 import {
+  isWorkerProxySshEndpoint,
   prepareWorkerSsh,
   type PreparedWorkerSsh,
   type WorkerSshIdentityResolver,
@@ -68,7 +69,7 @@ rmdir -- "$directory" 2>/dev/null || true
 
 type WorkerTunnelStartRequest = WorkerTunnelRequest & {
   gateway: { host: "127.0.0.1" | "::1"; port: number };
-  ssh: WorkerSshEndpoint;
+  ssh: WorkerSshTransport;
   resolveIdentity: WorkerSshIdentityResolver;
 };
 
@@ -362,7 +363,7 @@ export function createWorkerTunnelManager(options: WorkerTunnelManagerOptions = 
       }
       entry.prepared = await prepareWorkerSsh({
         ssh: request.ssh,
-        pinnedHostKey: request.ssh.hostKey,
+        ...(!isWorkerProxySshEndpoint(request.ssh) ? { pinnedHostKey: request.ssh.hostKey } : {}),
         resolveIdentity: request.resolveIdentity,
         temporaryDirectoryPrefix: "openclaw-worker-tunnel-",
       });

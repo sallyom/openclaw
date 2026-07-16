@@ -25,9 +25,12 @@ import {
 } from "../../packages/gateway-protocol/src/schema/worker-inference.js";
 import { PROTOCOL_VERSION } from "../../packages/gateway-protocol/src/version.js";
 import { isWorkerLocalToolName, type WorkerToolAuthority } from "./tool-authority.js";
+import type { WorkerLocalInferenceRoute } from "../plugins/types.js";
 import { isWorkerTranscriptMessageFrameSafe } from "./transcript-message.js";
 
 const LAUNCH_VERSION = 2;
+
+export type WorkerLaunchInference = { mode: "gateway-proxy" } | WorkerLocalInferenceRoute;
 
 type WorkerLaunchAssignment = {
   runId: string;
@@ -37,6 +40,7 @@ type WorkerLaunchAssignment = {
   workspaceDir: string;
   modelRef: WorkerInferenceModelRef;
   inferenceOptions: WorkerInferenceOptions;
+  inference: WorkerLaunchInference;
   systemPrompt?: string;
   initialMessages: WorkerTranscriptMessage[];
   transcript: {
@@ -116,7 +120,7 @@ function parseAssignment(value: unknown): WorkerLaunchAssignment | undefined {
         "liveEvents",
         "toolAuthority",
       ],
-      ["systemPrompt"],
+      ["systemPrompt", "inference"],
     )
   ) {
     return undefined;
@@ -141,7 +145,8 @@ function parseAssignment(value: unknown): WorkerLaunchAssignment | undefined {
   }
   if (
     !Value.Check(WorkerInferenceModelRefSchema, value.modelRef) ||
-    !isInferenceOptions(value.inferenceOptions)
+    !isInferenceOptions(value.inferenceOptions) ||
+    (value.inference !== undefined && !isLaunchInference(value.inference))
   ) {
     return undefined;
   }
@@ -162,7 +167,50 @@ function parseAssignment(value: unknown): WorkerLaunchAssignment | undefined {
   ) {
     return undefined;
   }
-  return { ...value, toolAuthority } as WorkerLaunchAssignment;
+  return {
+    ...(value as Omit<WorkerLaunchAssignment, "inference" | "toolAuthority">),
+    toolAuthority,
+    inference: (value.inference as WorkerLaunchInference | undefined) ?? {
+      mode: "gateway-proxy",
+    },
+  };
+}
+
+function isLaunchInference(value: unknown): value is WorkerLaunchInference {
+  if (!isRecord(value)) {
+    return false;
+  }
+  if (value.mode === "gateway-proxy") {
+    return hasExactKeys(value, ["mode"]);
+  }
+  if (
+    value.mode !== "local" ||
+    !hasExactKeys(value, ["mode", "api", "baseUrl", "provider", "model"], ["routeVersion"]) ||
+    (value.api !== "anthropic-messages" &&
+      value.api !== "openai-completions" &&
+      value.api !== "openai-responses") ||
+    !isIdentifier(value.provider) ||
+    !isIdentifier(value.model) ||
+    typeof value.baseUrl !== "string" ||
+    (value.routeVersion !== undefined &&
+      (typeof value.routeVersion !== "number" ||
+        !Number.isSafeInteger(value.routeVersion) ||
+        value.routeVersion < 1))
+  ) {
+    return false;
+  }
+  try {
+    const parsed = new URL(value.baseUrl);
+    return (
+      parsed.protocol === "https:" &&
+      !parsed.username &&
+      !parsed.password &&
+      !parsed.search &&
+      !parsed.hash
+    );
+  } catch {
+    return false;
+  }
 }
 
 export function buildWorkerConnectParams(

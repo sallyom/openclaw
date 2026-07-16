@@ -173,7 +173,7 @@ export async function createGatewayWorkerEnvironmentRuntime(params: {
         {
           ssh: sshEndpoint,
           artifact: installation,
-          pinnedHostKey: sshEndpoint.hostKey,
+          pinnedHostKey: "proxyCommand" in sshEndpoint ? undefined : sshEndpoint.hostKey,
         },
         { signal, resolveIdentity },
       );

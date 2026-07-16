@@ -1393,15 +1393,18 @@ export interface WorkerEnvironments {
   idle_since_at_ms: number | null;
   last_error: string | null;
   lease_id: string | null;
+  local_inference_route_json: string | null;
   owner_epoch: Generated<number>;
   profile_id: string;
   profile_snapshot_json: string;
+  provider_failure_observed_at_ms: number | null;
   provider_id: string;
   provision_operation_id: string;
   ssh_host: string | null;
   ssh_host_key: string | null;
   ssh_key_ref_json: string | null;
   ssh_port: number | null;
+  ssh_proxy_command: string | null;
   ssh_user: string | null;
   state: string;
   state_changed_at_ms: number;

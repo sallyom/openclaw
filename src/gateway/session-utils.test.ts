@@ -2331,6 +2331,23 @@ describe("gateway session utils", () => {
     });
   });
 
+  test("listAgentsForGateway exposes names from agents.entries", () => {
+    const cfg = {
+      session: { mainKey: "main" },
+      agents: {
+        entries: {
+          primary_agent: { default: true, name: "Primary", identity: { name: "Primary" } },
+        },
+      },
+    } as OpenClawConfig;
+
+    expect(listAgentsForGateway(cfg).agents[0]).toMatchObject({
+      id: "primary_agent",
+      name: "Primary",
+      identity: { name: "Primary" },
+    });
+  });
+
   test("listAgentsForGateway prefers explicit name over identity.name", () => {
     const cfg = {
       session: { mainKey: "main" },

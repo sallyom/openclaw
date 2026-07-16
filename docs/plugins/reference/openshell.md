@@ -1,5 +1,5 @@
 ---
-summary: "OpenClaw sandbox backend for the NVIDIA OpenShell CLI with mirrored local workspaces and SSH command execution."
+summary: "OpenClaw tool sandbox and per-session cloud worker provider for the NVIDIA OpenShell CLI."
 read_when:
   - You are installing, configuring, or auditing the openshell plugin
 title: "Openshell plugin"
@@ -7,7 +7,7 @@ title: "Openshell plugin"
 
 # Openshell plugin
 
-OpenClaw sandbox backend for the NVIDIA OpenShell CLI with mirrored local workspaces and SSH command execution.
+OpenClaw tool sandbox and per-session cloud worker provider for the NVIDIA OpenShell CLI.
 
 ## Distribution
 
@@ -16,4 +16,4 @@ OpenClaw sandbox backend for the NVIDIA OpenShell CLI with mirrored local worksp
 
 ## Surface
 
-plugin
+contracts: `workerProviders`

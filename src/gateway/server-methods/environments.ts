@@ -153,7 +153,17 @@ export const environmentsHandlers: GatewayRequestHandlers = {
         ...workers.map((record) => summarizeWorkerEnvironment(record, summarizedAtMs)),
       );
       const profiles = listWorkerProfiles(context);
-      respond(true, { environments, ...(profiles.length > 0 ? { profiles } : {}) }, undefined);
+      const requiredProfileId =
+        profiles.length > 0 ? context.getRuntimeConfig().cloudWorkers?.requiredProfile : undefined;
+      respond(
+        true,
+        {
+          environments,
+          ...(profiles.length > 0 ? { profiles } : {}),
+          ...(requiredProfileId ? { requiredProfileId } : {}),
+        },
+        undefined,
+      );
     });
   },
   "environments.status": async ({ params, respond, context }) => {

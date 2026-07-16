@@ -84,7 +84,14 @@ const resolveIdentity = async () => ({ kind: "path", path: "/keys/worker" }) as 
 const bootstrapWorker = (
   request: WorkerBootstrapRequest,
   dependencies: WorkerBootstrapDependencies,
-) => bootstrapWorkerCore({ pinnedHostKey: request.ssh.hostKey, ...request }, dependencies);
+) =>
+  bootstrapWorkerCore(
+    {
+      pinnedHostKey: "proxyCommand" in request.ssh ? undefined : request.ssh.hostKey,
+      ...request,
+    },
+    dependencies,
+  );
 
 describe("bootstrapWorker", () => {
   it("skips a matching installed bundle and uses the pinned host key", async () => {

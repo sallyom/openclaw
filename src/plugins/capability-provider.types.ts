@@ -48,8 +48,10 @@ import type { PluginJsonValue } from "./host-hooks.js";
 /** JSON-compatible provider settings for one configured worker profile. */
 export type WorkerProfile = Readonly<Record<string, PluginJsonValue>>;
 
-/** SSH endpoint material returned by a worker provider after provisioning. */
+/** Direct SSH endpoint material returned by a worker provider after provisioning. */
 export type WorkerSshEndpoint = {
+  /** Optional discriminator; omitted by existing direct-SSH providers. */
+  kind?: "direct";
   host: string;
   port: number;
   user: string;
@@ -57,6 +59,33 @@ export type WorkerSshEndpoint = {
   hostKey: string;
   /** Secret reference only; providers must never return plaintext key material. */
   keyRef: SecretRef;
+};
+
+/**
+ * SSH endpoint authenticated by a provider-owned proxy command.
+ * The command must contain no credentials; it may resolve short-lived session material at runtime.
+ */
+export type WorkerProxySshEndpoint = {
+  kind: "proxy-command";
+  host: string;
+  port: number;
+  user: string;
+  proxyCommand: string;
+};
+
+/** SSH transport returned by a worker provider after provisioning. */
+export type WorkerSshTransport = WorkerSshEndpoint | WorkerProxySshEndpoint;
+
+/** Provider-advertised, credential-free inference endpoint reachable from the worker lease. */
+export type WorkerLocalInferenceRoute = {
+  mode: "local";
+  api: "anthropic-messages" | "openai-completions" | "openai-responses";
+  baseUrl: string;
+  /** OpenClaw model-provider id whose request semantics this route expects. */
+  provider: string;
+  model: string;
+  /** Provider-owned route generation captured when the lease is provisioned. */
+  routeVersion?: number;
 };
 
 /** Resolved SSH client identity. Providers may return a local path or ephemeral material. */
@@ -74,12 +103,15 @@ export type WorkerSshIdentityRequest = {
 /** Durable lease identity and endpoint returned by a successful provision operation. */
 export type WorkerLease = {
   leaseId: string;
-  ssh: WorkerSshEndpoint;
+  ssh: WorkerSshTransport;
+  inference?: WorkerLocalInferenceRoute;
 };
 
 /** Authoritative inspection result for an already-known worker lease. */
 export type WorkerLeaseStatus =
   | { status: "active" }
+  | { status: "pending" }
+  | { status: "failed" }
   | { status: "destroyed" }
   | { status: "unknown" };
 
@@ -101,7 +133,7 @@ export type WorkerProvider = {
    * Repeating the same operation id must be idempotent across gateway restarts.
    */
   provision: (profile: WorkerProfile, operationId: string) => Promise<WorkerLease>;
-  /** Throws on transient/indeterminate failures; `unknown` means authoritative absence. */
+  /** Throws on indeterminate failures; `unknown` means authoritative absence. */
   inspect: (lease: { leaseId: string; profile: WorkerProfile }) => Promise<WorkerLeaseStatus>;
   /**
    * Resolves provider-owned dynamic identities. When absent, the gateway uses its generic

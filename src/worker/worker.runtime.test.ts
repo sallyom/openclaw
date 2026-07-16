@@ -728,6 +728,7 @@ function descriptor(socketPath: string, workspaceDir: string): WorkerLaunchDescr
       workspaceDir,
       modelRef: MODEL_REF,
       inferenceOptions: { reasoning: "off" },
+      inference: { mode: "gateway-proxy" },
       initialMessages: [],
       transcript: { baseLeafId: "leaf-base", nextSeq: 3 },
       liveEvents: { ackedSeq: 0, nextSeq: 1 },

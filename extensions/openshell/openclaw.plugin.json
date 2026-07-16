@@ -3,8 +3,11 @@
   "activation": {
     "onStartup": true
   },
-  "name": "OpenShell Sandbox",
-  "description": "OpenClaw sandbox backend for the NVIDIA OpenShell CLI with mirrored local workspaces and SSH command execution.",
+  "name": "OpenShell Sandbox and Worker",
+  "description": "OpenClaw tool sandbox and per-session cloud worker provider for the NVIDIA OpenShell CLI.",
+  "contracts": {
+    "workerProviders": ["openshell"]
+  },
   "configSchema": {
     "type": "object",
     "additionalProperties": false,

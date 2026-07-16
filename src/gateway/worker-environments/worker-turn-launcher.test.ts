@@ -3,6 +3,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { WORKER_LOCAL_INFERENCE_PROTOCOL_FEATURE } from "../../../packages/gateway-protocol/src/schema/worker-admission.js";
 import { SessionManager } from "../../agents/sessions/session-manager.js";
 import {
   makeAgentAssistantMessage,
@@ -233,7 +234,9 @@ describe("worker turn launcher", () => {
     return reclaimed;
   }
 
-  function attachedEnvironment(): WorkerTurnEnvironmentRecord {
+  function attachedEnvironment(
+    localInferenceRoute: WorkerTurnEnvironmentRecord["localInferenceRoute"] = null,
+  ): WorkerTurnEnvironmentRecord {
     return {
       environmentId: ENVIRONMENT_ID,
       providerId: "fake",
@@ -243,12 +246,13 @@ describe("worker turn launcher", () => {
       bootstrapReceipt: {
         bundleHash: BUNDLE_HASH,
         openclawVersion: "2026.7.2",
-        protocolFeatures: [],
+        protocolFeatures: localInferenceRoute ? [WORKER_LOCAL_INFERENCE_PROTOCOL_FEATURE] : [],
       },
       ownerEpoch: OWNER_EPOCH,
       teardownTerminalState: null,
       attachedSessionIds: [SESSION_ID],
       lastError: null,
+      providerFailureObservedAtMs: null,
       createdAtMs: 1,
       updatedAtMs: 1,
       stateChangedAtMs: 1,
@@ -257,6 +261,7 @@ describe("worker turn launcher", () => {
       tunnelStatus: "connected",
       state: "attached",
       leaseId: "lease-worker-turn",
+      localInferenceRoute,
       sshEndpoint: {
         host: "worker.example.test",
         port: 22,
@@ -347,10 +352,69 @@ describe("worker turn launcher", () => {
     expect(placements.get(SESSION_ID)?.turnClaim).toBeNull();
   });
 
+  it("fails closed for an unplaced turn when a cloud worker profile is required", async () => {
+    const runLocal = vi.fn(async () => ({ meta: { durationMs: 1 } }));
+    const provider = createWorkerSessionTurnPlacementProvider({
+      environments: unusedEnvironments(),
+      placements,
+      requiredProfileId: () => "openshell",
+    });
+
+    await expect(
+      provider.executeTurn(
+        { sessionId: SESSION_ID, sessionKey: SESSION_KEY, agentId: "main", runId: "run-local" },
+        turn("run-local"),
+        runLocal,
+      ),
+    ).rejects.toThrow("Cloud worker profile openshell is required");
+
+    expect(runLocal).not.toHaveBeenCalled();
+  });
+
+  it("rejects local execution even when cloud placement is active", async () => {
+    seedActivePlacement();
+    const runLocal = vi.fn(async () => ({ kind: "cli" }));
+    const provider = createWorkerSessionTurnPlacementProvider({
+      environments: unusedEnvironments(),
+      placements,
+      requiredProfileId: () => "openshell",
+    });
+
+    await expect(
+      provider.executeLocalTurn(
+        { sessionId: SESSION_ID, sessionKey: SESSION_KEY, agentId: "main", runId: "run-cli" },
+        runLocal,
+      ),
+    ).rejects.toThrow("local turns are disabled");
+
+    expect(runLocal).not.toHaveBeenCalled();
+  });
+
+  it("rejects an active worker from another profile when a profile is required", async () => {
+    seedActivePlacement();
+    const runLocal = vi.fn(async () => ({ meta: { durationMs: 1 } }));
+    const provider = createWorkerSessionTurnPlacementProvider({
+      environments: { ...unusedEnvironments(), get: vi.fn(() => attachedEnvironment()) },
+      placements,
+      requiredProfileId: () => "openshell",
+    });
+
+    await expect(
+      provider.executeTurn(
+        { sessionId: SESSION_ID, sessionKey: SESSION_KEY, agentId: "main", runId: "run-worker" },
+        turn("run-worker"),
+        runLocal,
+      ),
+    ).rejects.toThrow("Cloud worker profile openshell is required");
+
+    expect(runLocal).not.toHaveBeenCalled();
+  });
+
   it("leaves no placement row for an auxiliary model run without a session key", async () => {
     const provider = createWorkerSessionTurnPlacementProvider({
       environments: unusedEnvironments(),
       placements,
+      requiredProfileId: () => "openshell",
     });
     const runLocal = vi.fn(async () => ({ meta: { durationMs: 1 } }));
 
@@ -565,6 +629,40 @@ describe("worker turn launcher", () => {
     },
   );
 
+  it("rejects provider switching for a fixed local inference route", async () => {
+    seedActivePlacement();
+    const environments: WorkerTurnEnvironmentService = {
+      ...unusedEnvironments(),
+      get: vi.fn(() =>
+        attachedEnvironment({
+          mode: "local",
+          api: "anthropic-messages",
+          baseUrl: "https://inference.local",
+          provider: "anthropic",
+          model: "gpt-test",
+          routeVersion: 1,
+        }),
+      ),
+    };
+    const provider = createWorkerSessionTurnPlacementProvider({ environments, placements });
+
+    await expect(
+      provider.executeTurn(
+        {
+          sessionId: SESSION_ID,
+          sessionKey: SESSION_KEY,
+          agentId: "main",
+          runId: "run-provider-switch",
+        },
+        turn("run-provider-switch"),
+        async () => ({ meta: { durationMs: 1 } }),
+      ),
+    ).rejects.toThrow(
+      "Cloud worker local inference is fixed to anthropic/gpt-test; requested openai/gpt-test",
+    );
+    expect(placements.get(SESSION_ID)?.turnClaim).toBeNull();
+  });
+
   it("reports keep-local workspace conflicts and releases its claim", async () => {
     const initialized = await runCommandWithTimeout(["git", "-C", root, "init", "--quiet"], {
       timeoutMs: 10_000,
@@ -681,7 +779,16 @@ describe("worker turn launcher", () => {
       stop: vi.fn(async () => {}),
     };
     const environments: WorkerTurnEnvironmentService = {
-      get: vi.fn(() => attachedEnvironment()),
+      get: vi.fn(() =>
+        attachedEnvironment({
+          mode: "local",
+          api: "openai-responses",
+          baseUrl: "https://inference.local/v1",
+          provider: "openai",
+          model: "gpt-test",
+          routeVersion: 2,
+        }),
+      ),
       acquireTurnCredential: vi.fn(async () => credential()),
       acknowledgeCredentialDelivery,
       startTunnel: vi.fn(async () => tunnel),
@@ -758,6 +865,14 @@ describe("worker turn launcher", () => {
       "exec",
       "process",
     ]);
+    expect(descriptor?.assignment.inference).toEqual({
+      mode: "local",
+      api: "openai-responses",
+      baseUrl: "https://inference.local/v1",
+      provider: "openai",
+      model: "gpt-test",
+      routeVersion: 2,
+    });
     expect(descriptor?.assignment.initialMessages).toEqual([
       {
         role: "user",

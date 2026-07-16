@@ -1830,6 +1830,8 @@ CREATE TABLE IF NOT EXISTS worker_environments (
   ssh_user TEXT,
   ssh_host_key TEXT,
   ssh_key_ref_json TEXT,
+  ssh_proxy_command TEXT,
+  local_inference_route_json TEXT,
   state TEXT NOT NULL CHECK (
     state IN (
       'requested',
@@ -1856,6 +1858,7 @@ CREATE TABLE IF NOT EXISTS worker_environments (
   state_changed_at_ms INTEGER NOT NULL,
   idle_since_at_ms INTEGER,
   destroy_requested_at_ms INTEGER,
+  provider_failure_observed_at_ms INTEGER,
   last_error TEXT
 ) STRICT;
 

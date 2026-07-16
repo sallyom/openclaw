@@ -75,6 +75,7 @@ const WorkerEnvironmentProfileSummarySchema = closedObject({
 export const EnvironmentsListResultSchema = closedObject({
   environments: Type.Array(EnvironmentSummarySchema),
   profiles: Type.Optional(Type.Array(WorkerEnvironmentProfileSummarySchema)),
+  requiredProfileId: Type.Optional(NonEmptyString),
 });
 
 /** Status lookup request for one environment id. */

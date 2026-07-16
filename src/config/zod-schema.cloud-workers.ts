@@ -94,9 +94,25 @@ const CloudWorkersConfigShape = {
       label: "Cloud Worker Profiles",
       help: "Named cloud worker profiles. Each profile selects a worker provider registered by a plugin and carries provider-owned settings.",
     }),
+  requiredProfile: CloudWorkerProfileIdSchema.optional().register(configUiMetadata, {
+    label: "Required Cloud Worker Profile",
+    help: "Require every agent turn to run through this configured cloud worker profile. Local execution and other cloud worker profiles are rejected.",
+  }),
 } satisfies ConfigSchemaShape<CloudWorkersConfig>;
 
-export const CloudWorkersConfigSchema = z.object(CloudWorkersConfigShape).strict().optional();
+export const CloudWorkersConfigSchema = z
+  .object(CloudWorkersConfigShape)
+  .strict()
+  .superRefine((value, ctx) => {
+    if (value.requiredProfile && !Object.hasOwn(value.profiles ?? {}, value.requiredProfile)) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["requiredProfile"],
+        message: `Required cloud worker profile is not configured: ${value.requiredProfile}`,
+      });
+    }
+  })
+  .optional();
 
 const CLOUD_WORKER_FIELD_SCHEMAS = {
   "cloudWorkers.profiles": CloudWorkersConfigShape.profiles,
@@ -104,6 +120,7 @@ const CLOUD_WORKER_FIELD_SCHEMAS = {
   "cloudWorkers.profiles.*.provider": CloudWorkerProfileShape.provider,
   "cloudWorkers.profiles.*.install": CloudWorkerProfileShape.install,
   "cloudWorkers.profiles.*.settings": CloudWorkerProfileShape.settings,
+  "cloudWorkers.requiredProfile": CloudWorkersConfigShape.requiredProfile,
 };
 
 function projectCloudWorkerFieldMetadata(field: "label" | "help"): Record<string, string> {

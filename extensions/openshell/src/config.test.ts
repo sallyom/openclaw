@@ -1,7 +1,11 @@
 // Openshell tests cover config plugin behavior.
 import fsSync from "node:fs";
 import { describe, expect, it } from "vitest";
-import { createOpenShellPluginConfigSchema, resolveOpenShellPluginConfig } from "./config.js";
+import {
+  createOpenShellPluginConfigSchema,
+  resolveOpenShellPluginConfig,
+  resolveOpenShellWorkerProfileConfig,
+} from "./config.js";
 
 describe("openshell plugin config", () => {
   it("applies defaults", () => {
@@ -24,6 +28,38 @@ describe("openshell plugin config", () => {
 
   it("accepts remote mode", () => {
     expect(resolveOpenShellPluginConfig({ mode: "remote" }).mode).toBe("remote");
+  });
+
+  it("accepts a fixed inference.local worker route", () => {
+    expect(
+      resolveOpenShellWorkerProfileConfig({
+        inference: {
+          mode: "local",
+          provider: "team-anthropic",
+          openclawProvider: "anthropic",
+          model: "claude-sonnet-4-5",
+          api: "anthropic-messages",
+        },
+      }).inference,
+    ).toEqual({
+      mode: "local",
+      provider: "team-anthropic",
+      openclawProvider: "anthropic",
+      model: "claude-sonnet-4-5",
+      api: "anthropic-messages",
+    });
+  });
+
+  it("rejects an incomplete inference.local worker route", () => {
+    expect(() =>
+      resolveOpenShellWorkerProfileConfig({
+        inference: {
+          mode: "local",
+          provider: "team-anthropic",
+          openclawProvider: "anthropic",
+        },
+      }),
+    ).toThrow("inference.model");
   });
 
   it("rejects relative remote paths", () => {
@@ -63,6 +99,12 @@ describe("openshell plugin config", () => {
       remoteAgentWorkspaceDir: "/agent/session",
       timeoutMs: 120_000,
     });
+  });
+
+  it("accepts a workspace scope", () => {
+    expect(resolveOpenShellPluginConfig({ workspace: "openclaw-workers" }).workspace).toBe(
+      "openclaw-workers",
+    );
   });
 
   it("rejects unknown mode", () => {

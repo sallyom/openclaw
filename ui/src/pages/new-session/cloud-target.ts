@@ -7,8 +7,8 @@ import { GatewayRequestError, type GatewayBrowserClient } from "../../api/gatewa
 import { icons } from "../../components/icons.ts";
 import { t } from "../../i18n/index.ts";
 import { generateUUID } from "../../lib/uuid.ts";
-import type { DraftCloudProfile } from "./discovery.ts";
-import { readDraftCloudProfiles } from "./discovery.ts";
+import type { DraftCloudProfileCatalog } from "./discovery.ts";
+import { readDraftCloudProfileCatalog } from "./discovery.ts";
 
 type CloudStartOutcome =
   | { status: "started"; messageId: string; messageSeq?: number }
@@ -275,9 +275,9 @@ export async function deleteRecoveredCloudDraftSession(
 
 export async function requestCloudProfiles(
   client: Pick<GatewayBrowserClient, "request">,
-): Promise<DraftCloudProfile[]> {
+): Promise<DraftCloudProfileCatalog> {
   const result = await client.request<EnvironmentsListResult>("environments.list", {});
-  return readDraftCloudProfiles(result?.profiles);
+  return readDraftCloudProfileCatalog(result);
 }
 
 export async function startCloudInitialTurn(

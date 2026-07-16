@@ -101,6 +101,7 @@ describe("worker environment protocol schemas", () => {
       Value.Check(EnvironmentsListResultSchema, {
         environments: [],
         profiles: [{ id: "aws", providerId: "crabbox" }],
+        requiredProfileId: "aws",
       }),
     ).toBe(true);
     expect(

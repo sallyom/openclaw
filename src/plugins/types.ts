@@ -138,10 +138,12 @@ export type {
   TranscriptSourceProvider,
   WorkerLease,
   WorkerLeaseStatus,
+  WorkerLocalInferenceRoute,
   WorkerProfile,
   WorkerProvider,
   WorkerSshEndpoint,
   WorkerSshIdentity,
+  WorkerSshTransport,
 } from "./capability-provider.types.js";
 export type {
   MigrationApplyResult,

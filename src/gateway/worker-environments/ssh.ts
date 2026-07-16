@@ -1,9 +1,10 @@
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import type { SecretRef } from "../../config/types.secrets.js";
 import { normalizeScpRemoteHost } from "../../infra/scp-host.js";
 import { registerSecretValueForRedaction } from "../../logging/secret-redaction-registry.js";
-import type { WorkerSshEndpoint, WorkerSshIdentity } from "../../plugins/types.js";
+import type { WorkerSshIdentity, WorkerSshTransport } from "../../plugins/types.js";
 import type { CommandOptions } from "../../process/exec.js";
 
 const MAX_HOST_KEY_LENGTH = 16_384;
@@ -17,14 +18,19 @@ export type PreparedWorkerSsh = {
   scpTarget: string;
   host: string;
   port: number;
-  identityPath: string;
-  knownHostsPath: string;
+  identityPath?: string;
+  knownHostsPath?: string;
+  proxyCommand?: string;
   dispose(): Promise<void>;
 };
 
-export type WorkerSshIdentityResolver = (
-  keyRef: WorkerSshEndpoint["keyRef"],
-) => Promise<WorkerSshIdentity>;
+export type WorkerSshIdentityResolver = (keyRef: SecretRef) => Promise<WorkerSshIdentity>;
+
+export function isWorkerProxySshEndpoint(
+  ssh: WorkerSshTransport,
+): ssh is Extract<WorkerSshTransport, { kind: "proxy-command" }> {
+  return ssh.kind === "proxy-command";
+}
 
 function normalizeIdentityMaterial(contents: string): string {
   const normalized = contents
@@ -35,7 +41,7 @@ function normalizeIdentityMaterial(contents: string): string {
   return normalized.endsWith("\n") ? normalized : `${normalized}\n`;
 }
 
-function normalizeEndpoint(ssh: WorkerSshEndpoint): {
+function normalizeEndpoint(ssh: WorkerSshTransport): {
   sshTarget: string;
   scpTarget: string;
   host: string;
@@ -91,17 +97,34 @@ function pinnedKnownHostsLine(params: {
 
 /** Materializes one pinned identity/known-hosts context for a complete SSH ownership lifetime. */
 export async function prepareWorkerSsh(params: {
-  ssh: WorkerSshEndpoint;
+  ssh: WorkerSshTransport;
   pinnedHostKey?: string;
   resolveIdentity: WorkerSshIdentityResolver;
   temporaryDirectoryPrefix?: string;
 }): Promise<PreparedWorkerSsh> {
+  const endpoint = normalizeEndpoint(params.ssh);
+  if (isWorkerProxySshEndpoint(params.ssh)) {
+    const proxyCommand = params.ssh.proxyCommand.trim();
+    if (
+      !proxyCommand ||
+      proxyCommand.length > 16_384 ||
+      proxyCommand.includes("\0") ||
+      proxyCommand.includes("\n") ||
+      proxyCommand.includes("\r")
+    ) {
+      throw new Error("Worker SSH proxy command must be one bounded non-empty line");
+    }
+    return {
+      ...endpoint,
+      proxyCommand,
+      async dispose() {},
+    };
+  }
   if (params.pinnedHostKey === undefined) {
     throw new Error(
       "Worker SSH setup is missing pinnedHostKey; WorkerProvider.provision() must return ssh.hostKey",
     );
   }
-  const endpoint = normalizeEndpoint(params.ssh);
   const knownHosts = pinnedKnownHostsLine({
     host: endpoint.host,
     port: endpoint.port,
@@ -160,6 +183,55 @@ export function workerSshOptions(
   prepared: PreparedWorkerSsh,
   params: { forwarding: "disabled" | "explicit" },
 ): string[] {
+  if (prepared.proxyCommand) {
+    return [
+      "-F",
+      "none",
+      "-o",
+      "BatchMode=yes",
+      "-o",
+      "ConnectTimeout=10",
+      "-o",
+      "NumberOfPasswordPrompts=0",
+      "-o",
+      "StrictHostKeyChecking=no",
+      "-o",
+      "UserKnownHostsFile=/dev/null",
+      "-o",
+      "GlobalKnownHostsFile=/dev/null",
+      "-o",
+      "UpdateHostKeys=no",
+      "-o",
+      "ForwardAgent=no",
+      "-o",
+      "ForwardX11=no",
+      "-o",
+      "ForwardX11Trusted=no",
+      "-o",
+      `ClearAllForwardings=${params.forwarding === "disabled" ? "yes" : "no"}`,
+      "-o",
+      "ExitOnForwardFailure=yes",
+      "-o",
+      "IdentityAgent=none",
+      "-o",
+      "IdentityFile=none",
+      "-o",
+      "IdentitiesOnly=yes",
+      "-o",
+      "ServerAliveInterval=15",
+      "-o",
+      "ServerAliveCountMax=3",
+      "-o",
+      "ControlMaster=no",
+      "-o",
+      "ControlPath=none",
+      "-o",
+      `ProxyCommand=${prepared.proxyCommand}`,
+    ];
+  }
+  if (!prepared.knownHostsPath || !prepared.identityPath) {
+    throw new Error("Worker direct SSH context is incomplete");
+  }
   return [
     "-F",
     "none",
@@ -207,7 +279,17 @@ export function workerSshCommandOptions(params: {
   timeoutMs: number;
   signal?: AbortSignal;
 }): CommandOptions {
-  const names = ["HOME", "PATH", "LANG", "LC_ALL", "TZ", "SystemRoot", "WINDIR"] as const;
+  const names = [
+    "HOME",
+    "PATH",
+    "LANG",
+    "LC_ALL",
+    "TZ",
+    "SystemRoot",
+    "WINDIR",
+    // Provider-owned proxy commands may need a short-lived capability token.
+    "OPENCLAW_WORKER_PROXY_TOKEN",
+  ] as const;
   const baseEnv = Object.fromEntries(
     names.flatMap((name) => (process.env[name] === undefined ? [] : [[name, process.env[name]]])),
   );

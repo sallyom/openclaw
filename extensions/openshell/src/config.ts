@@ -24,6 +24,14 @@ type OpenShellPluginConfig = {
   timeoutSeconds?: number;
 };
 
+export type ResolvedOpenShellLocalInferenceConfig = {
+  mode: "local";
+  provider: string;
+  openclawProvider: string;
+  model: string;
+  api: "anthropic-messages" | "openai-completions" | "openai-responses";
+};
+
 export type ResolvedOpenShellPluginConfig = {
   mode: "mirror" | "remote";
   command: string;
@@ -38,6 +46,10 @@ export type ResolvedOpenShellPluginConfig = {
   remoteWorkspaceDir: string;
   remoteAgentWorkspaceDir: string;
   timeoutMs: number;
+};
+
+export type ResolvedOpenShellWorkerProfileConfig = ResolvedOpenShellPluginConfig & {
+  inference?: ResolvedOpenShellLocalInferenceConfig;
 };
 
 const DEFAULT_COMMAND = "openshell";
@@ -113,6 +125,20 @@ const OpenShellPluginConfigSchema = z.strictObject({
       error: `timeoutSeconds must be a number <= ${MAX_TIMER_TIMEOUT_SECONDS}`,
     })
     .optional(),
+});
+
+const OpenShellInferenceConfigSchema = z.strictObject({
+  mode: z.literal("local", { error: "inference.mode must be local" }),
+  provider: nonEmptyTrimmedString("inference.provider must be a non-empty string"),
+  openclawProvider: nonEmptyTrimmedString("inference.openclawProvider must be a non-empty string"),
+  model: nonEmptyTrimmedString("inference.model must be a non-empty string"),
+  api: z.enum(["anthropic-messages", "openai-completions", "openai-responses"], {
+    error: "inference.api must be one of anthropic-messages, openai-completions, openai-responses",
+  }),
+});
+
+const OpenShellWorkerProfileConfigSchema = OpenShellPluginConfigSchema.extend({
+  inference: OpenShellInferenceConfigSchema.optional(),
 });
 
 function isManagedOpenShellRemotePath(value: string): boolean {
@@ -212,5 +238,20 @@ export function resolveOpenShellPluginConfig(value: unknown): ResolvedOpenShellP
       typeof cfg.timeoutSeconds === "number"
         ? Math.floor(cfg.timeoutSeconds * 1000)
         : DEFAULT_TIMEOUT_MS,
+  };
+}
+
+export function resolveOpenShellWorkerProfileConfig(
+  value: unknown,
+): ResolvedOpenShellWorkerProfileConfig {
+  const parsed = OpenShellWorkerProfileConfigSchema.safeParse(value);
+  if (!parsed.success) {
+    const message = formatPluginConfigIssue(parsed.error.issues[0]);
+    throw new Error(`Invalid openshell worker profile: ${message}`);
+  }
+  const { inference, ...pluginConfig } = parsed.data;
+  return {
+    ...resolveOpenShellPluginConfig(pluginConfig),
+    inference,
   };
 }

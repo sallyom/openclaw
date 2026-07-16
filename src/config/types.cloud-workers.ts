@@ -12,4 +12,6 @@ export type CloudWorkerProfileConfig = {
 export type CloudWorkersConfig = {
   /** Named opt-in worker profiles. Omit or leave empty to disable cloud workers. */
   profiles?: Record<string, CloudWorkerProfileConfig>;
+  /** Require every agent turn to use this configured cloud-worker profile. */
+  requiredProfile?: string;
 };

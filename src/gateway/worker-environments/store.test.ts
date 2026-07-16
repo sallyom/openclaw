@@ -10,7 +10,11 @@ import {
   type OpenClawStateDatabase,
 } from "../../state/openclaw-state-db.js";
 import { hashWorkerCredential } from "./credential.js";
-import { createWorkerEnvironmentStore, type WorkerEnvironmentStore } from "./store.js";
+import {
+  createWorkerEnvironmentStore,
+  normalizeWorkerSshEndpoint,
+  type WorkerEnvironmentStore,
+} from "./store.js";
 
 type WorkerEnvironmentBootstrapReceipt = WorkerAdmissionHandshake;
 type WorkerEnvironmentProfileSnapshot = WorkerProfile;
@@ -36,6 +40,109 @@ const BOOTSTRAP_RECEIPT: WorkerEnvironmentBootstrapReceipt = {
 const CREDENTIAL = ["worker", "credential", "fixture"].join("-");
 
 describe("worker environment store", () => {
+  it("round-trips provider-authenticated SSH proxy endpoints", () => {
+    const intent = store.createIntent({
+      environmentId: "worker-proxy",
+      providerId: "openshell",
+      profileId: "openshell",
+      profileSnapshot: { settings: {} },
+      provisionOperationId: "provision-proxy",
+    });
+    const provisioning = store.transition({
+      environmentId: intent.environmentId,
+      from: "requested",
+      to: "provisioning",
+    });
+    const bootstrapping = store.transition({
+      environmentId: provisioning.environmentId,
+      from: "provisioning",
+      to: "bootstrapping",
+      patch: {
+        leaseId: "openshell-worker-proxy",
+        sshEndpoint: {
+          kind: "proxy-command",
+          host: "openshell-worker-proxy",
+          port: 22,
+          user: "sandbox",
+          proxyCommand: "openshell ssh-proxy --gateway-name local --name worker-proxy",
+        },
+      },
+    });
+
+    expect(bootstrapping.sshEndpoint).toEqual({
+      kind: "proxy-command",
+      host: "openshell-worker-proxy",
+      port: 22,
+      user: "sandbox",
+      proxyCommand: "openshell ssh-proxy --gateway-name local --name worker-proxy",
+    });
+  });
+
+  it("round-trips an immutable credential-free local inference route", () => {
+    const intent = createIntent("worker-local-inference");
+    store.transition({
+      environmentId: intent.environmentId,
+      from: "requested",
+      to: "provisioning",
+    });
+    const route = {
+      mode: "local" as const,
+      api: "openai-responses" as const,
+      baseUrl: "https://inference.local/v1",
+      provider: "openai",
+      model: "gpt-5.4",
+      routeVersion: 9,
+    };
+    store.transition({
+      environmentId: intent.environmentId,
+      from: "provisioning",
+      to: "bootstrapping",
+      patch: {
+        leaseId: "lease-local-inference",
+        sshEndpoint: SSH_ENDPOINT,
+        localInferenceRoute: route,
+      },
+    });
+
+    closeOpenClawStateDatabaseForTest();
+    database = openOpenClawStateDatabase({ env: { OPENCLAW_STATE_DIR: root } });
+    store = createWorkerEnvironmentStore({ database, now: () => nowMs });
+    expect(store.get(intent.environmentId)?.localInferenceRoute).toEqual(route);
+    expect(() =>
+      store.transition({
+        environmentId: intent.environmentId,
+        from: "bootstrapping",
+        to: "ready",
+        patch: {
+          ...readyPatch(),
+          localInferenceRoute: { ...route, model: "gpt-5.4-mini" },
+        },
+      }),
+    ).toThrow("local inference route is immutable");
+  });
+
+  it.each([
+    {
+      kind: "direct",
+      host: "worker",
+      port: 22,
+      user: "sandbox",
+      proxyCommand: "openshell ssh-proxy --name worker",
+    },
+    {
+      kind: "proxy-command",
+      host: "worker",
+      port: 22,
+      user: "sandbox",
+      proxyCommand: "openshell ssh-proxy --name worker",
+      hostKey: HOST_KEY,
+      keyRef: SSH_ENDPOINT.keyRef,
+    },
+  ])("rejects mixed SSH trust shapes", (endpoint) => {
+    expect(() => normalizeWorkerSshEndpoint(endpoint as never)).toThrow(
+      "mixes direct and proxy authentication",
+    );
+  });
   let root: string;
   let database: OpenClawStateDatabase;
   let store: WorkerEnvironmentStore;

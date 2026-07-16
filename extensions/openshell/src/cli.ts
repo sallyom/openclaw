@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 // Openshell plugin module implements cli behavior.
 import {
   createSshSandboxSessionFromConfigText,
@@ -36,7 +37,7 @@ export function buildRemoteCommand(argv: string[]): string {
   return argv.map((entry) => shellEscape(entry)).join(" ");
 }
 
-function applyGatewayEndpointToSshConfig(params: {
+export function applyGatewayEndpointToSshConfig(params: {
   configText: string;
   gatewayEndpoint?: string;
 }): string {
@@ -61,11 +62,23 @@ export async function runOpenShellCli(params: {
   cwd?: string;
   timeoutMs?: number;
 }): Promise<{ code: number; stdout: string; stderr: string }> {
+  const env = { ...process.env };
+  // A parent sandbox workload receives only the restricted delegation token;
+  // its full supervisor JWT is intentionally unavailable to plugin code.
+  const tokenFile =
+    env.OPENSHELL_DELEGATION_TOKEN_FILE?.trim() ?? env.OPENSHELL_SANDBOX_TOKEN_FILE?.trim();
+  if (!env.OPENSHELL_SANDBOX_TOKEN && tokenFile) {
+    try {
+      env.OPENSHELL_SANDBOX_TOKEN = readFileSync(tokenFile, "utf8").trim();
+    } catch {
+      // Let the CLI report the missing sandbox credentials.
+    }
+  }
   return await runPluginCommandWithTimeout({
     argv: [...buildOpenShellBaseArgv(params.context.config), ...params.args],
     cwd: params.cwd,
     timeoutMs: params.timeoutMs ?? params.context.timeoutMs ?? params.context.config.timeoutMs,
-    env: process.env,
+    env,
   });
 }
 

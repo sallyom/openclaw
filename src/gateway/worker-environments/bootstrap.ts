@@ -8,7 +8,7 @@ import {
 import { isExactSemverVersion } from "../../infra/npm-registry-spec.js";
 import { normalizeScpRemotePath } from "../../infra/scp-host.js";
 import { redactSensitiveText } from "../../logging/redact.js";
-import type { WorkerSshEndpoint, WorkerSshIdentity } from "../../plugins/types.js";
+import type { WorkerSshIdentity, WorkerSshTransport } from "../../plugins/types.js";
 import {
   runCommandWithTimeout,
   type CommandOptions,
@@ -16,6 +16,7 @@ import {
 } from "../../process/exec.js";
 import { WORKER_BUNDLE_MANIFEST_VERSION, type WorkerInstallationArtifact } from "./bundle.js";
 import {
+  isWorkerProxySshEndpoint,
   prepareWorkerSsh,
   type PreparedWorkerSsh,
   workerSshCommandOptions,
@@ -501,14 +502,16 @@ type WorkerBootstrapCommandRunner = (
 ) => Promise<SpawnResult>;
 
 type WorkerBootstrapRequest = {
-  ssh: WorkerSshEndpoint;
+  ssh: WorkerSshTransport;
   artifact: WorkerInstallationArtifact;
   /** Provider endpoint host key copied by the gateway bootstrap adapter. */
   pinnedHostKey?: string;
 };
 
 type WorkerBootstrapDependencies = {
-  resolveIdentity: (keyRef: WorkerSshEndpoint["keyRef"]) => Promise<ResolvedWorkerSshIdentity>;
+  resolveIdentity: (
+    keyRef: import("../../config/types.secrets.js").SecretRef,
+  ) => Promise<ResolvedWorkerSshIdentity>;
   runCommand?: WorkerBootstrapCommandRunner;
   timeoutMs?: number;
   signal?: AbortSignal;
@@ -698,7 +701,7 @@ export async function bootstrapWorker(
   const runCommand = dependencies.runCommand ?? runCommandWithTimeout;
   const prepared = await prepareWorkerSsh({
     ssh: request.ssh,
-    pinnedHostKey: request.pinnedHostKey,
+    ...(!isWorkerProxySshEndpoint(request.ssh) ? { pinnedHostKey: request.pinnedHostKey } : {}),
     resolveIdentity: dependencies.resolveIdentity,
     temporaryDirectoryPrefix: "openclaw-worker-bootstrap-",
   });

@@ -1,7 +1,7 @@
 {
   "name": "@openclaw/openshell-sandbox",
   "version": "2026.7.2",
-  "description": "OpenClaw sandbox backend for the NVIDIA OpenShell CLI with mirrored local workspaces and SSH command execution.",
+  "description": "OpenClaw tool sandbox and per-session cloud worker provider for the NVIDIA OpenShell CLI.",
   "repository": {
     "type": "git",
     "url": "https://github.com/openclaw/openclaw"

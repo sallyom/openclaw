@@ -88,14 +88,14 @@ function makeContext(overrides: Partial<GatewayRequestContext> = {}): GatewayReq
   } as unknown as GatewayRequestContext;
 }
 
-async function invoke(context: GatewayRequestContext) {
+async function invoke(context: GatewayRequestContext, profileId = "test") {
   const respond = vi.fn() as unknown as RespondFn;
   await expectDefined(
     sessionsHandlers["sessions.dispatch"],
     'sessionsHandlers["sessions.dispatch"] test invariant',
   )({
     req: { id: "dispatch-request" } as never,
-    params: { key: sessionKey, profileId: "test" },
+    params: { key: sessionKey, profileId },
     respond,
     context,
     client: null,
@@ -133,6 +133,32 @@ describe("sessions.dispatch", () => {
       false,
       undefined,
       expect.objectContaining({ code: ErrorCodes.INVALID_REQUEST }),
+    );
+  });
+
+  it("rejects dispatch to a profile other than the gateway-required profile", async () => {
+    const dispatch = vi.fn();
+    const respond = await invoke(
+      makeContext({
+        getRuntimeConfig: () => ({
+          cloudWorkers: {
+            profiles: { test: { provider: "fake" }, openshell: { provider: "openshell" } },
+            requiredProfile: "openshell",
+          },
+        }),
+        workerPlacementDispatchService: { dispatch },
+        workerSessionPlacementService: { getMany: () => new Map() },
+      }),
+    );
+
+    expect(dispatch).not.toHaveBeenCalled();
+    expect(respond).toHaveBeenCalledWith(
+      false,
+      undefined,
+      expect.objectContaining({
+        code: ErrorCodes.INVALID_REQUEST,
+        message: expect.stringContaining("openshell is required"),
+      }),
     );
   });
 
@@ -432,6 +458,32 @@ describe("sessions.reclaim", () => {
       ownerKind: "session",
       ownerId: sessionKey,
     });
+  });
+
+  it("rejects reclaim while cloud execution is required", async () => {
+    const reclaim = vi.fn();
+    const respond = await invokeReclaim(
+      makeContext({
+        getRuntimeConfig: () => ({
+          cloudWorkers: {
+            profiles: { test: { provider: "fake" } },
+            requiredProfile: "test",
+          },
+        }),
+        workerPlacementDispatchService: { dispatch: vi.fn(), reclaim },
+        workerSessionPlacementService: { getMany: () => new Map() },
+      }),
+    );
+
+    expect(reclaim).not.toHaveBeenCalled();
+    expect(respond).toHaveBeenCalledWith(
+      false,
+      undefined,
+      expect.objectContaining({
+        code: ErrorCodes.INVALID_REQUEST,
+        message: expect.stringContaining("cannot reclaim"),
+      }),
+    );
   });
 
   it("reconciles and reclaims an active placement", async () => {

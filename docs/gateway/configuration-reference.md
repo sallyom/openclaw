@@ -783,7 +783,7 @@ See [Multiple Gateways](/gateway/multiple-gateways).
 
 Cloud workers are opt-in. If `cloudWorkers` is absent, or `profiles` is empty, OpenClaw accepts no new worker creation. Durable records created earlier still reconcile and remain visible; the existing gateway/node projection is unchanged.
 
-Every worker provider must return an SSH `hostKey` from trusted provisioning output as exactly `algorithm base64`, without a hostname or comment. Bootstrap writes that key to an isolated `known_hosts` file, uses `StrictHostKeyChecking=yes`, and fails before opening a connection when the provider omits it. There is no trust-on-first-use fallback.
+Direct-SSH worker providers must return an SSH `hostKey` from trusted provisioning output as exactly `algorithm base64`, without a hostname or comment. Bootstrap writes that key to an isolated `known_hosts` file, uses `StrictHostKeyChecking=yes`, and fails before opening a direct connection when the provider omits it. There is no trust-on-first-use fallback. Provider-authenticated proxy transports, such as the `ssh-proxy` registered when the OpenShell plugin is enabled, declare that alternate trust boundary explicitly and do not weaken direct SSH pinning.
 
 Tunnel setup is on demand rather than part of provisioning. When started, the gateway reverse-forwards a worker-local Unix socket to its loopback WebSocket endpoint. The socket lives in a randomly allocated, owner-only remote directory; unlike a loopback TCP port, it is not reachable by other accounts on a multi-user worker and cannot collide with another environment's port. SSH keepalives and capped reconnect backoff run only while the tunnel owner remains current. Stopping the tunnel fences reconnects before closing the SSH process.
 
@@ -828,6 +828,43 @@ Unknown settings are rejected. Crabbox credentials and backend-specific account 
 <Note>
   OpenClaw resolves Crabbox's lease-local `sshKey` path through the provider-owned secret resolver and pins the authoritative `sshHostKey` returned by `crabbox inspect --json`. AWS admission also requires `providerMetadata.instanceProfileAttached`. Install Crabbox 0.38.1 or newer for this closed inspection contract.
 </Note>
+
+### OpenShell profile
+
+When the OpenShell plugin is installed and enabled, its `openshell` worker provider creates one OpenShell sandbox for each cloud-worker environment. OpenShell must be newer than v0.0.91. Run the OpenClaw Gateway in an OpenShell sandbox with its `OPENSHELL_SANDBOX_ID` and mounted `OPENSHELL_SANDBOX_TOKEN_FILE`; the plugin passes the resulting short-lived sandbox JWT to the OpenShell CLI, which creates and connects only to that Gateway sandbox's server-owned children. OpenClaw reaches each child through the credential-free `ProxyCommand` returned by `openshell sandbox ssh-config`. The provider is unavailable when the plugin is absent or disabled.
+
+```json5
+{
+  cloudWorkers: {
+    profiles: {
+      isolated: {
+        provider: "openshell",
+        install: "bundle",
+        settings: {
+          gatewayEndpoint: "https://openshell-gateway.example.com",
+          workspace: "openclaw-workers",
+          from: "openclaw",
+          policy: "/etc/openshell/openclaw.yaml",
+          autoProviders: false,
+          inference: {
+            mode: "local",
+            provider: "openclaw-anthropic",
+            openclawProvider: "anthropic",
+            model: "claude-sonnet-4-5",
+            api: "anthropic-messages",
+          },
+        },
+      },
+    },
+  },
+}
+```
+
+With the plugin enabled, the settings match its OpenShell CLI, Gateway, workspace, source, policy, provider, GPU, timeout, and optional inference settings. Delegated workers require `gatewayEndpoint`, the OpenShell Gateway URL; do not rely on host-side OpenShell Gateway metadata. Set `workspace` to select an explicit OpenShell workspace; if it is omitted, the plugin preserves the CLI's ambient workspace. Use a dedicated existing workspace for each profile that needs an isolated inference route. The OpenShell CLI must be installed in the Gateway sandbox, its mounted sandbox JWT must authorize delegated child lifecycle and forwarding in that workspace, and the worker sandbox source must provide a supported Node.js runtime.
+
+This worker provider moves the agent loop and tools into a per-session OpenShell sandbox. Without `settings.inference`, model calls use the OpenClaw Gateway's worker inference proxy. With `settings.inference.mode: "local"`, the worker calls OpenShell's credential-free workspace-scoped `inference.local` endpoint and the OpenShell Gateway injects the configured provider credential. Configure that route first with `openshell --workspace <settings.workspace> provider create` and `openshell --workspace <settings.workspace> inference set`; the plugin validates its OpenShell provider record and model before allocation. Set `openclawProvider` to the OpenClaw model provider id selected by the session; local turns require both that provider id and `model` to match.
+
+Local inference supports `anthropic-messages`, `openai-completions`, and `openai-responses`. The configured model is fixed for the placement: dynamic model/provider switching and fallback are rejected. Do not update the OpenShell route while matching placements are active because route drift is revalidated only at lease provision or adoption. See [Cloud Workers](/gateway/cloud-workers#openshell-workers) for the complete setup and security behavior.
 
 ### Static SSH development profile
 

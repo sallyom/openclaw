@@ -124,7 +124,7 @@ describe("gateway startup import boundaries", () => {
     expect(workerStartup.slice(identityStart, bootstrapStart)).toContain(runtimeLoad);
     expect(workerStartup.slice(bootstrapStart, loggerStart)).toContain(runtimeLoad);
     expect(workerStartup.slice(bootstrapStart, loggerStart)).toContain(
-      "pinnedHostKey: sshEndpoint.hostKey",
+      '"proxyCommand" in sshEndpoint ? undefined : sshEndpoint.hostKey',
     );
     expect(workerStartup.match(/loadWorkerEnvironmentRuntimeModule\(\)/gu)).toHaveLength(3);
   });

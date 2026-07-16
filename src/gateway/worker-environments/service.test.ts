@@ -351,6 +351,28 @@ describe("worker environment service", () => {
     expect(workerService.takeMintedCredential(binding)).toBeUndefined();
   });
 
+  it("persists a provider-advertised local inference route with the lease", async () => {
+    const inference = {
+      mode: "local" as const,
+      api: "anthropic-messages" as const,
+      baseUrl: "https://inference.local",
+      provider: "anthropic",
+      model: "claude-sonnet-4-5",
+      routeVersion: 3,
+    };
+    const workerService = createService(
+      createProvider({
+        provision: async () => ({ leaseId: "lease-local", ssh: SSH_ENDPOINT, inference }),
+      }),
+    );
+
+    await expect(workerService.create("development", "request-local")).resolves.toMatchObject({
+      leaseId: "lease-local",
+      localInferenceRoute: inference,
+    });
+    expect(store.list()[0]?.localInferenceRoute).toEqual(inference);
+  });
+
   it("adopts a matching milestone-1 row that predates worker credentials", async () => {
     const environmentId = "worker-milestone-one";
     seedReady(environmentId);
@@ -1991,6 +2013,96 @@ describe("worker environment service", () => {
     expect(tunnelManager.stop).toHaveBeenCalledTimes(4);
     expect(store.get("worker-unknown")?.state).toBe("orphaned");
     expect(store.get("worker-destroyed-unknown")).toMatchObject({ state: "destroyed" });
+  });
+
+  it("retains pending leases", async () => {
+    seedReady("worker-pending");
+    const provider = createProvider({
+      inspect: async () => ({ status: "pending" }),
+    });
+
+    await createService(provider).reconcileOnce();
+
+    expect(store.get("worker-pending")?.state).toBe("ready");
+  });
+
+  it("requires a durable grace before tearing down a provider-failed lease", async () => {
+    seedReady("worker-failed");
+    const destroy = vi.fn(async () => {});
+    const provider = createProvider({ inspect: async () => ({ status: "failed" }), destroy });
+    const workerService = createService(provider);
+
+    await workerService.reconcileOnce();
+    expect(store.get("worker-failed")).toMatchObject({
+      state: "ready",
+      providerFailureObservedAtMs: nowMs,
+      lastError: "Worker provider reported a terminal lease failure",
+    });
+
+    nowMs += 5 * 60_000 - 1;
+    await workerService.reconcileOnce();
+    expect(store.get("worker-failed")?.state).toBe("ready");
+
+    nowMs += 1;
+    await workerService.reconcileOnce();
+    expect(store.get("worker-failed")).toMatchObject({ state: "failed", leaseId: null });
+    expect(destroy).toHaveBeenCalledOnce();
+  });
+
+  it("does not apply the provider-failure grace to requested teardown", async () => {
+    seedReady("worker-failed-destroy");
+    store.requestDestroy({ environmentId: "worker-failed-destroy", state: "ready" });
+    const destroy = vi.fn(async () => {});
+    const provider = createProvider({ inspect: async () => ({ status: "failed" }), destroy });
+
+    await createService(provider).reconcileOnce();
+
+    expect(store.get("worker-failed-destroy")?.state).toBe("destroyed");
+    expect(destroy).toHaveBeenCalledOnce();
+  });
+
+  it("clears a provider-failure observation when the lease recovers", async () => {
+    seedReady("worker-recovered");
+    let failed = true;
+    const provider = createProvider({
+      inspect: async () => ({ status: failed ? "failed" : "active" }),
+    });
+    const workerService = createService(provider);
+
+    await workerService.reconcileOnce();
+    failed = false;
+    await workerService.reconcileOnce();
+
+    expect(store.get("worker-recovered")).toMatchObject({ state: "ready", lastError: null });
+    expect(store.get("worker-recovered")?.providerFailureObservedAtMs).toBeNull();
+  });
+
+  it("preserves the provider-failure grace across indeterminate inspections", async () => {
+    seedReady("worker-failed-transient");
+    let inspection = 0;
+    const destroy = vi.fn(async () => {});
+    const provider = createProvider({
+      inspect: async () => {
+        inspection += 1;
+        if (inspection === 2) {
+          throw new Error("inspection unavailable");
+        }
+        return { status: "failed" };
+      },
+      destroy,
+    });
+    const workerService = createService(provider);
+
+    await workerService.reconcileOnce();
+    const observedAtMs = store.get("worker-failed-transient")?.providerFailureObservedAtMs;
+    nowMs += 4 * 60_000;
+    await workerService.reconcileOnce();
+    expect(store.get("worker-failed-transient")?.providerFailureObservedAtMs).toBe(observedAtMs);
+
+    nowMs += 60_000;
+    await workerService.reconcileOnce();
+    expect(store.get("worker-failed-transient")?.state).toBe("failed");
+    expect(destroy).toHaveBeenCalledOnce();
   });
 
   it.each([null, { status: "future" }])(

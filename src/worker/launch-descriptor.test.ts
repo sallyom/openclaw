@@ -32,6 +32,7 @@ function launchDescriptor(): WorkerLaunchDescriptor {
       workspaceDir: "/tmp/openclaw-worker/workspace",
       modelRef: { provider: "provider-1", model: "model-1" },
       inferenceOptions: { reasoning: "medium", maxTokens: 512 },
+      inference: { mode: "gateway-proxy" },
       initialMessages: [
         {
           role: "user",
@@ -56,6 +57,45 @@ describe("worker launch descriptor", () => {
       client: { id: "openclaw-worker", mode: "worker", version: "2026.7.12" },
       admission: { ...descriptor.admission, runId: descriptor.assignment.runId },
     });
+  });
+
+  it("accepts a credential-free local inference route", () => {
+    const descriptor = launchDescriptor();
+    descriptor.assignment.inference = {
+      mode: "local",
+      api: "openai-responses",
+      baseUrl: "https://inference.local/v1",
+      provider: "openai",
+      model: "gpt-5.4",
+      routeVersion: 4,
+    };
+
+    expect(parseWorkerLaunchDescriptor(structuredClone(descriptor))).toEqual(descriptor);
+  });
+
+  it("rejects local inference URLs carrying credentials", () => {
+    const descriptor = launchDescriptor();
+    descriptor.assignment.inference = {
+      mode: "local",
+      api: "openai-responses",
+      baseUrl: "https://token@inference.local/v1",
+      provider: "openai",
+      model: "gpt-5.4",
+    };
+
+    expect(() => parseWorkerLaunchDescriptor(descriptor)).toThrow(
+      "invalid worker launch descriptor",
+    );
+  });
+
+  it("defaults legacy descriptors without inference to the Gateway proxy", () => {
+    const descriptor = launchDescriptor();
+    const assignment = { ...descriptor.assignment } as Record<string, unknown>;
+    delete assignment.inference;
+
+    expect(parseWorkerLaunchDescriptor({ ...descriptor, assignment }).assignment.inference).toEqual(
+      { mode: "gateway-proxy" },
+    );
   });
 
   it("rejects unknown fields at every launch-owned boundary", () => {

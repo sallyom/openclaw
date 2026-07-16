@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { truncateUtf16Safe } from "@openclaw/normalization-core/utf16-slice";
+import { WORKER_LOCAL_INFERENCE_PROTOCOL_FEATURE } from "../../../packages/gateway-protocol/src/schema/worker-admission.js";
 import { mapThinkingLevelForProvider } from "../../agents/embedded-agent-runner/utils.js";
 import type {
   LocalTurnPlacementClaim,
@@ -72,6 +73,7 @@ type WorkerTurnLauncherOptions = {
   admitNewPlacements?: boolean;
   environments: WorkerTurnEnvironmentService;
   placements: WorkerSessionPlacementStore;
+  requiredProfileId?: () => string | undefined;
   resolveWorkspacePath: (identity: ReturnType<typeof resolvePlacementIdentity>) => Promise<string>;
   workspaceOperations?: WorkerWorkspaceOperationCoordinator;
   redispatchReclaimed?: (placement: ReclaimedWorkerPlacement) => Promise<ActiveWorkerPlacement>;
@@ -79,6 +81,38 @@ type WorkerTurnLauncherOptions = {
 
 class WorkerTurnExecutionError extends Error {}
 class WorkerWorkspaceReconciliationError extends Error {}
+
+function requiredProfileId(options: WorkerTurnLauncherOptions): string | undefined {
+  return options.requiredProfileId?.()?.trim() || undefined;
+}
+
+function assertRequiredWorkerPlacement(params: {
+  claim: LocalTurnPlacementClaim;
+  current: WorkerSessionPlacementRecord | undefined;
+  environments: WorkerTurnEnvironmentService;
+  requiredProfileId: string | undefined;
+}): void {
+  const requiredProfile = params.requiredProfileId;
+  if (!requiredProfile) {
+    return;
+  }
+  if (!params.current || params.current.state === "local") {
+    throw new Error(
+      `Cloud worker profile ${requiredProfile} is required for session ${params.claim.sessionId}; dispatch a managed worktree session before starting a turn`,
+    );
+  }
+  if (params.current.state !== "active") {
+    throw new Error(
+      `Cloud worker profile ${requiredProfile} is required for session ${params.claim.sessionId}; placement is ${params.current.state}`,
+    );
+  }
+  const environment = params.environments.get(params.current.environmentId);
+  if (!environment || environment.profileId !== requiredProfile) {
+    throw new Error(
+      `Cloud worker profile ${requiredProfile} is required for session ${params.claim.sessionId}`,
+    );
+  }
+}
 
 async function executeLocalTurn<T>(params: {
   claim: LocalTurnPlacementClaim;
@@ -180,15 +214,27 @@ async function executeWorkerTurn(params: {
   const { placement, turn } = params;
   const modelRef = assertSupportedTurn(turn);
   const environment = params.environments.get(placement.environmentId);
+  const bootstrapReceipt = environment?.bootstrapReceipt;
   if (
     !environment ||
     environment.state !== "attached" ||
     environment.ownerEpoch !== placement.activeOwnerEpoch ||
-    environment.bootstrapReceipt?.bundleHash !== placement.workerBundleHash ||
+    bootstrapReceipt?.bundleHash !== placement.workerBundleHash ||
     environment.attachedSessionIds.length !== 1 ||
     environment.attachedSessionIds[0] !== placement.sessionId
   ) {
     throw new Error("Active worker placement does not match its attached environment");
+  }
+  const inference = environment.localInferenceRoute ?? { mode: "gateway-proxy" as const };
+  if (inference.mode === "local") {
+    if (inference.provider !== modelRef.provider || inference.model !== modelRef.model) {
+      throw new Error(
+        `Cloud worker local inference is fixed to ${inference.provider}/${inference.model}; requested ${modelRef.provider}/${modelRef.model}`,
+      );
+    }
+    if (!bootstrapReceipt.protocolFeatures.includes(WORKER_LOCAL_INFERENCE_PROTOCOL_FEATURE)) {
+      throw new Error("Cloud worker does not support local inference");
+    }
   }
   let manifestAccepted = false;
   let workspaceConflict:
@@ -305,7 +351,7 @@ async function executeWorkerTurn(params: {
           sessionId: placement.sessionId,
           ownerEpoch: placement.activeOwnerEpoch,
           rpcSetVersion: credential.rpcSetVersion,
-          handshake: environment.bootstrapReceipt,
+          handshake: bootstrapReceipt,
         },
         assignment: {
           runId: turn.runId,
@@ -315,6 +361,10 @@ async function executeWorkerTurn(params: {
           workspaceDir: placement.remoteWorkspaceDir,
           modelRef,
           inferenceOptions: reasoning ? { reasoning } : {},
+          ...(inference.mode === "local" ||
+          bootstrapReceipt.protocolFeatures.includes(WORKER_LOCAL_INFERENCE_PROTOCOL_FEATURE)
+            ? { inference }
+            : {}),
           ...(turn.extraSystemPrompt === undefined ? {} : { systemPrompt: turn.extraSystemPrompt }),
           initialMessages: windowedMessages,
           transcript: {
@@ -567,18 +617,30 @@ export function createWorkerSessionTurnPlacementProvider(
     options.workspaceOperations ?? createWorkerWorkspaceOperationCoordinator();
   return {
     async executeLocalTurn<T>(claim: LocalTurnPlacementClaim, runLocal: () => Promise<T>) {
-      if (!options.placements.get(claim.sessionId) && options.admitNewPlacements === false) {
+      const current = options.placements.get(claim.sessionId);
+      const requiredProfile = requiredProfileId(options);
+      if (requiredProfile) {
+        throw new Error(
+          `Cloud worker profile ${requiredProfile} is required for session ${claim.sessionId}; local turns are disabled`,
+        );
+      }
+      if (!current && options.admitNewPlacements === false) {
         return await runLocal();
       }
       return await executeLocalTurn({ claim, placements: options.placements, runLocal });
     },
     async executeTurn(claim, turn, runLocal) {
       const current = options.placements.get(claim.sessionId);
-      if (
-        !current &&
-        (options.admitNewPlacements === false ||
-          (turn.modelRun === true && !claim.sessionKey?.trim()))
-      ) {
+      if (!current && turn.modelRun === true && !claim.sessionKey?.trim()) {
+        return await runLocal();
+      }
+      assertRequiredWorkerPlacement({
+        claim,
+        current,
+        environments: options.environments,
+        requiredProfileId: requiredProfileId(options),
+      });
+      if (!current && options.admitNewPlacements === false) {
         return await runLocal();
       }
       if (!current || current.state === "local") {

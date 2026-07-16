@@ -29,7 +29,7 @@ import {
   type WorkerLease,
   type WorkerProfile,
   type WorkerProvider,
-  type WorkerSshEndpoint,
+  type WorkerSshTransport,
   type WorkerSshIdentity,
 } from "../../plugins/types.js";
 import { safeEqualSecret } from "../../security/secret-equal.js";
@@ -92,6 +92,9 @@ class WorkerEnvironmentServiceError extends Error {
 const serviceError = (code: WorkerEnvironmentServiceErrorCode, message: string) =>
   new WorkerEnvironmentServiceError(code, message);
 const ORPHANED_LEASE_ERROR = "Worker provider no longer recognizes the lease";
+const FAILED_LEASE_ERROR = "Worker provider reported a terminal lease failure";
+const FAILED_LEASE_GRACE_MS = 5 * 60_000;
+const STALE_ATTACHED_BUNDLE_ERROR = "Attached worker build no longer matches the Gateway";
 
 function workerEnvironmentIdempotencyDigest(idempotencyKey: string): string {
   return createHash("sha256").update(idempotencyKey).digest("hex");
@@ -110,7 +113,7 @@ type WorkerEnvironmentServiceOptions = {
     install: WorkerInstallationArtifact["install"],
   ) => Promise<WorkerInstallationArtifact>;
   bootstrapWorker: (params: {
-    sshEndpoint: WorkerSshEndpoint;
+    sshEndpoint: WorkerSshTransport;
     installation: WorkerInstallationArtifact;
     resolveIdentity: (keyRef: SecretRef) => Promise<WorkerSshIdentity>;
     signal: AbortSignal;
@@ -595,11 +598,16 @@ export function createWorkerEnvironmentService(options: WorkerEnvironmentService
         move(record, "failed", { lastError: boundedError(error) });
         throw serviceError("invalid_profile", "Worker provider rejected profile");
       }
+      warn(`WorkerProvider provision failed: ${boundedError(error)}`);
       saveError(record, error);
       throw serviceError("provider_failure", "Worker provider operation failed");
     }
     // A timeout can happen after allocation; retain the same operation id for safe replay.
-    const patch = { leaseId: lease.leaseId, sshEndpoint: lease.ssh };
+    const patch = {
+      leaseId: lease.leaseId,
+      sshEndpoint: lease.ssh,
+      localInferenceRoute: lease.inference ?? null,
+    };
     const bootstrapping = move(record, "bootstrapping", patch);
     if (record.destroyRequestedAtMs !== null) {
       return bootstrapping;
@@ -672,6 +680,7 @@ export function createWorkerEnvironmentService(options: WorkerEnvironmentService
     try {
       await callProvider(() => owningProvider.destroy(lifecycleLease(r, leaseId)));
     } catch (error) {
+      warn(`WorkerProvider destroy failed for ${leaseId}: ${boundedError(error)}`);
       saveError(destroying, error);
       throw serviceError("provider_failure", "Worker provider operation failed");
     }
@@ -762,6 +771,37 @@ export function createWorkerEnvironmentService(options: WorkerEnvironmentService
     if (!status) {
       return;
     }
+    if (status === "failed") {
+      if (record.destroyRequestedAtMs !== null) {
+        await finishDestroy(record, provider).catch(() => undefined);
+        return;
+      }
+      if (record.providerFailureObservedAtMs === null) {
+        store.recordProviderFailure({
+          environmentId: record.environmentId,
+          state: record.state,
+          error: FAILED_LEASE_ERROR,
+        });
+        return;
+      }
+      if (now() - record.providerFailureObservedAtMs < FAILED_LEASE_GRACE_MS) {
+        return;
+      }
+      const requested = store.requestDestroy({
+        environmentId: record.environmentId,
+        state: record.state,
+        terminalState: "failed",
+        lastError: FAILED_LEASE_ERROR,
+      });
+      await finishDestroy(requested, provider).catch(() => undefined);
+      return;
+    }
+    if (record.providerFailureObservedAtMs !== null) {
+      record = store.clearProviderFailure({
+        environmentId: record.environmentId,
+        state: record.state,
+      });
+    }
     const teardownExpected = record.destroyRequestedAtMs !== null || record.state === "destroying";
     if (status === "destroyed" || (status === "unknown" && teardownExpected)) {
       const requested =
@@ -780,6 +820,9 @@ export function createWorkerEnvironmentService(options: WorkerEnvironmentService
           : move(record, "draining", { lastError: ORPHANED_LEASE_ERROR });
       await tunnels?.stop(record.environmentId);
       move(draining, "orphaned", { lastError: ORPHANED_LEASE_ERROR });
+      return;
+    }
+    if (status === "pending" && record.destroyRequestedAtMs === null) {
       return;
     }
     if (record.destroyRequestedAtMs !== null) {

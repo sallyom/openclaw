@@ -90,6 +90,20 @@ describe("listGatewayAgentsBasic", () => {
     expect(result.agents).toEqual([{ id: "main", kind: "agent", name: "小金" }]);
   });
 
+  it("uses the configured name from agents.entries", () => {
+    const cfg: OpenClawConfig = {
+      agents: {
+        entries: {
+          primary_agent: { default: true, name: "Primary" },
+        },
+      },
+    };
+
+    expect(listGatewayAgentsBasic(cfg).agents).toEqual([
+      { id: "primary_agent", kind: "agent", name: "Primary" },
+    ]);
+  });
+
   it("prefers the explicit configured name over identity.name", () => {
     const cfg: OpenClawConfig = {
       session: { mainKey: "main" },

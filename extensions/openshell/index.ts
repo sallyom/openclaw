@@ -6,17 +6,19 @@ import {
   createOpenShellSandboxBackendManager,
 } from "./src/backend.js";
 import { createOpenShellPluginConfigSchema, resolveOpenShellPluginConfig } from "./src/config.js";
+import { createOpenShellWorkerProvider } from "./src/worker-provider.js";
 
 export default definePluginEntry({
   id: "openshell",
-  name: "OpenShell Sandbox",
-  description: "OpenShell-backed sandbox runtime for agent exec and file tools.",
+  name: "OpenShell Sandbox and Worker",
+  description: "OpenShell-backed tool sandbox and per-session cloud worker provider.",
   configSchema: createOpenShellPluginConfigSchema(),
   register(api) {
     if (api.registrationMode !== "full") {
       return;
     }
     const pluginConfig = resolveOpenShellPluginConfig(api.pluginConfig);
+    api.registerWorkerProvider(createOpenShellWorkerProvider());
     registerSandboxBackend("openshell", {
       factory: createOpenShellSandboxBackendFactory({
         pluginConfig,

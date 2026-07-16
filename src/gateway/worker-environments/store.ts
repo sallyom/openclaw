@@ -12,7 +12,12 @@ import {
   executeSqliteQueryTakeFirstSync,
   getNodeSqliteKysely,
 } from "../../infra/kysely-sync.js";
-import type { WorkerProfile, WorkerSshEndpoint } from "../../plugins/types.js";
+import type {
+  WorkerLocalInferenceRoute,
+  WorkerProfile,
+  WorkerSshEndpoint,
+  WorkerSshTransport,
+} from "../../plugins/types.js";
 import { isValidSecretRef } from "../../secrets/ref-contract.js";
 import type {
   DB as StateDatabase,
@@ -35,8 +40,9 @@ import {
 } from "./state.js";
 
 type WorkerEnvironmentProfileSnapshot = WorkerProfile;
-type WorkerEnvironmentSshEndpoint = WorkerSshEndpoint;
+type WorkerEnvironmentSshEndpoint = WorkerSshTransport;
 type WorkerEnvironmentBootstrapReceipt = WorkerAdmissionHandshake;
+type WorkerEnvironmentLocalInferenceRoute = WorkerLocalInferenceRoute;
 type WorkerEnvironmentTeardownTerminalState = "destroyed" | "failed";
 type RecordIdentity = { environmentId: string; providerId: string; profileId: string };
 type RecordBase = RecordIdentity & {
@@ -46,14 +52,25 @@ type RecordBase = RecordIdentity & {
   ownerEpoch: number;
   teardownTerminalState: WorkerEnvironmentTeardownTerminalState | null;
   attachedSessionIds: string[];
+  providerFailureObservedAtMs: number | null;
   lastError: string | null;
 } & { createdAtMs: number; updatedAtMs: number; stateChangedAtMs: number } & {
   idleSinceAtMs: number | null;
   destroyRequestedAtMs: number | null;
 };
 type Ssh = WorkerEnvironmentSshEndpoint;
-type UnleasedRecord = { state: WorkerEnvironmentUnleasedState; leaseId: null; sshEndpoint: null };
-type LeasedRecord = { state: WorkerEnvironmentLeasedState; leaseId: string; sshEndpoint: Ssh };
+type UnleasedRecord = {
+  state: WorkerEnvironmentUnleasedState;
+  leaseId: null;
+  sshEndpoint: null;
+  localInferenceRoute: null;
+};
+type LeasedRecord = {
+  state: WorkerEnvironmentLeasedState;
+  leaseId: string;
+  sshEndpoint: Ssh;
+  localInferenceRoute: WorkerEnvironmentLocalInferenceRoute | null;
+};
 export type WorkerEnvironmentRecord = RecordBase & (UnleasedRecord | LeasedRecord);
 export class WorkerSessionAlreadyAttachedError extends Error {
   constructor(
@@ -66,6 +83,7 @@ export class WorkerSessionAlreadyAttachedError extends Error {
 export type WorkerEnvironmentTransitionPatch = {
   leaseId?: string | null;
   sshEndpoint?: WorkerEnvironmentSshEndpoint | null;
+  localInferenceRoute?: WorkerEnvironmentLocalInferenceRoute | null;
   bootstrapReceipt?: WorkerEnvironmentBootstrapReceipt;
   attachedSessionIds?: readonly string[];
   lastError?: string | null;
@@ -99,6 +117,13 @@ type TransitionInput = {
 const TERMINAL_STATES: WorkerEnvironmentState[] = ["destroyed", "failed", "orphaned"];
 const WORKER_BUNDLE_HASH_PATTERN = /^[a-f0-9]{64}$/u;
 const MAX_HOST_KEY_LENGTH = 16_384;
+const MAX_PROXY_COMMAND_LENGTH = 16_384;
+const MAX_INFERENCE_BASE_URL_LENGTH = 2_048;
+const WORKER_LOCAL_INFERENCE_APIS = new Set([
+  "anthropic-messages",
+  "openai-completions",
+  "openai-responses",
+]);
 const WORKER_CREDENTIAL_HASH_PATTERN = /^[A-Za-z0-9_-]{43}$/u;
 const OPENSSH_HOST_KEY_TYPE_PATTERN =
   /^(?:ssh|ecdsa-sha2|sk-(?:ssh|ecdsa-sha2))-[A-Za-z0-9@._+-]+$/u;
@@ -216,14 +241,77 @@ function normalizeExpiry(value: unknown): number {
 export function normalizeWorkerSshEndpoint(value: Ssh): Ssh {
   const host = required(value.host, "SSH host");
   const user = required(value.user, "SSH user");
-  const hostKey = normalizeOpenSshHostKey(value.hostKey);
   if (!Number.isSafeInteger(value.port) || value.port < 1 || value.port > 65_535) {
     throw new Error("Worker environment SSH port must be an integer from 1 through 65535");
   }
+  if ("proxyCommand" in value) {
+    if (value.kind !== "proxy-command" || "hostKey" in value || "keyRef" in value) {
+      throw new Error("Worker environment SSH endpoint mixes direct and proxy authentication");
+    }
+    const proxyCommand = required(value.proxyCommand, "SSH proxy command");
+    if (
+      proxyCommand.length > MAX_PROXY_COMMAND_LENGTH ||
+      proxyCommand.includes("\0") ||
+      proxyCommand.includes("\n") ||
+      proxyCommand.includes("\r")
+    ) {
+      throw new Error("Worker environment SSH proxy command must be one bounded line");
+    }
+    return { kind: "proxy-command", host, port: value.port, user, proxyCommand };
+  }
+  if ("kind" in value && value.kind !== undefined && value.kind !== "direct") {
+    throw new Error("Worker environment SSH direct endpoint has an invalid kind");
+  }
+  const hostKey = normalizeOpenSshHostKey(value.hostKey);
   if (!isValidSecretRef(value.keyRef)) {
     throw new Error("Worker environment SSH key must be a canonical SecretRef");
   }
   return { host, port: value.port, user, hostKey, keyRef: { ...value.keyRef } };
+}
+export function normalizeWorkerLocalInferenceRoute(
+  value: WorkerEnvironmentLocalInferenceRoute,
+): WorkerEnvironmentLocalInferenceRoute {
+  if (!value || typeof value !== "object" || Array.isArray(value) || value.mode !== "local") {
+    throw new Error("Worker environment local inference route is invalid");
+  }
+  if (!WORKER_LOCAL_INFERENCE_APIS.has(value.api)) {
+    throw new Error("Worker environment local inference API is unsupported");
+  }
+  const model = required(value.model, "local inference model");
+  const provider = required(value.provider, "local inference provider");
+  const baseUrl = required(value.baseUrl, "local inference base URL");
+  if (baseUrl.length > MAX_INFERENCE_BASE_URL_LENGTH) {
+    throw new Error("Worker environment local inference base URL is too long");
+  }
+  let parsed: URL;
+  try {
+    parsed = new URL(baseUrl);
+  } catch {
+    throw new Error("Worker environment local inference base URL is invalid");
+  }
+  if (
+    parsed.protocol !== "https:" ||
+    parsed.username ||
+    parsed.password ||
+    parsed.search ||
+    parsed.hash
+  ) {
+    throw new Error(
+      "Worker environment local inference base URL must be credential-free HTTPS without query or fragment",
+    );
+  }
+  const routeVersion = value.routeVersion;
+  if (routeVersion !== undefined && (!Number.isSafeInteger(routeVersion) || routeVersion < 1)) {
+    throw new Error("Worker environment local inference route version must be a positive integer");
+  }
+  return {
+    mode: "local",
+    api: value.api,
+    baseUrl: parsed.toString().replace(/\/$/u, ""),
+    provider,
+    model,
+    ...(routeVersion === undefined ? {} : { routeVersion }),
+  };
 }
 function endpointFrom(row: Row): Ssh | null {
   const {
@@ -232,8 +320,24 @@ function endpointFrom(row: Row): Ssh | null {
     ssh_user: user,
     ssh_host_key: hostKey,
     ssh_key_ref_json: encoded,
+    ssh_proxy_command: proxyCommand,
   } = row;
-  if (host === null || port === null || user === null || hostKey === null || encoded === null) {
+  if (host === null || port === null || user === null) {
+    return null;
+  }
+  if (proxyCommand !== null) {
+    if (hostKey !== null || encoded !== null) {
+      throw new Error("Worker environment SSH endpoint mixes direct and proxy authentication");
+    }
+    return normalizeWorkerSshEndpoint({
+      kind: "proxy-command",
+      host,
+      port,
+      user,
+      proxyCommand,
+    });
+  }
+  if (hostKey === null || encoded === null) {
     return null;
   }
   return normalizeWorkerSshEndpoint({
@@ -241,7 +345,7 @@ function endpointFrom(row: Row): Ssh | null {
     port,
     user,
     hostKey,
-    keyRef: JSON.parse(encoded) as Ssh["keyRef"],
+    keyRef: JSON.parse(encoded) as WorkerSshEndpoint["keyRef"],
   });
 }
 function bootstrapReceiptFrom(row: Row): WorkerEnvironmentBootstrapReceipt | null {
@@ -262,10 +366,19 @@ function bootstrapReceiptFrom(row: Row): WorkerEnvironmentBootstrapReceipt | nul
     protocolFeatures: JSON.parse(encodedFeatures) as unknown,
   });
 }
+function localInferenceRouteFrom(row: Row): WorkerEnvironmentLocalInferenceRoute | null {
+  if (row.local_inference_route_json === null) {
+    return null;
+  }
+  return normalizeWorkerLocalInferenceRoute(
+    JSON.parse(row.local_inference_route_json) as WorkerEnvironmentLocalInferenceRoute,
+  );
+}
 function assertShape(
   state: WorkerEnvironmentState,
   leaseId: string | null,
   sshEndpoint: Ssh | null,
+  localInferenceRoute: WorkerEnvironmentLocalInferenceRoute | null,
   bootstrapReceipt: WorkerEnvironmentBootstrapReceipt | null,
   attachedSessionIds: readonly string[],
 ): void {
@@ -276,7 +389,7 @@ function assertShape(
     if (!sshEndpoint) {
       throw new Error("Worker environment provider lease requires an SSH endpoint reference");
     }
-  } else if (leaseId || sshEndpoint) {
+  } else if (leaseId || sshEndpoint || localInferenceRoute) {
     throw new Error(`Worker environment state ${state} cannot retain a provider lease`);
   }
   if (state === "bootstrapping" && bootstrapReceipt) {
@@ -324,6 +437,7 @@ function fromRow(row: Row): WorkerEnvironmentRecord {
     provisionOperationId: row.provision_operation_id,
     leaseId: row.lease_id,
     sshEndpoint: endpointFrom(row),
+    localInferenceRoute: localInferenceRouteFrom(row),
     bootstrapReceipt: bootstrapReceiptFrom(row),
     ownerEpoch: row.owner_epoch,
     teardownTerminalState: teardownTerminalStateFrom(row.teardown_terminal_state),
@@ -336,12 +450,14 @@ function fromRow(row: Row): WorkerEnvironmentRecord {
     stateChangedAtMs: row.state_changed_at_ms,
     idleSinceAtMs: row.idle_since_at_ms,
     destroyRequestedAtMs: row.destroy_requested_at_ms,
+    providerFailureObservedAtMs: row.provider_failure_observed_at_ms,
     lastError: row.last_error,
   };
   assertShape(
     record.state,
     record.leaseId,
     record.sshEndpoint,
+    record.localInferenceRoute,
     record.bootstrapReceipt,
     record.attachedSessionIds,
   );
@@ -605,6 +721,8 @@ export function createWorkerEnvironmentStore(
               ssh_user: null,
               ssh_host_key: null,
               ssh_key_ref_json: null,
+              ssh_proxy_command: null,
+              local_inference_route_json: null,
               bootstrap_bundle_hash: null,
               bootstrap_openclaw_version: null,
               bootstrap_protocol_features_json: null,
@@ -616,6 +734,7 @@ export function createWorkerEnvironmentStore(
               state_changed_at_ms: createdAtMs,
               idle_since_at_ms: null,
               destroy_requested_at_ms: null,
+              provider_failure_observed_at_ms: null,
               last_error: null,
             }),
         );
@@ -710,6 +829,21 @@ export function createWorkerEnvironmentStore(
             : patch.sshEndpoint === null
               ? null
               : normalizeWorkerSshEndpoint(patch.sshEndpoint);
+        const localInferenceRoute =
+          leaseId === null
+            ? null
+            : patch.localInferenceRoute === undefined
+              ? current.localInferenceRoute
+              : patch.localInferenceRoute === null
+                ? null
+                : normalizeWorkerLocalInferenceRoute(patch.localInferenceRoute);
+        if (
+          current.leaseId &&
+          JSON.stringify(localInferenceRoute) !== JSON.stringify(current.localInferenceRoute) &&
+          !clearsLeaseAfterTeardownFailure
+        ) {
+          throw new Error("Worker environment local inference route is immutable once persisted");
+        }
         const acceptsBootstrapReceipt = from === "bootstrapping" && to === "ready";
         if (patch.bootstrapReceipt !== undefined && !acceptsBootstrapReceipt) {
           throw new Error("Bootstrap receipt can only be recorded when a worker becomes ready");
@@ -747,7 +881,14 @@ export function createWorkerEnvironmentStore(
             : patch.attachedSessionIds === undefined
               ? current.attachedSessionIds
               : normalizeAttachedSessionIds(patch.attachedSessionIds);
-        assertShape(to, leaseId, sshEndpoint, bootstrapReceipt, attachedSessionIds);
+        assertShape(
+          to,
+          leaseId,
+          sshEndpoint,
+          localInferenceRoute,
+          bootstrapReceipt,
+          attachedSessionIds,
+        );
         const [attachedSessionId] = attachedSessionIds;
         if (to === "attached" && attachedSessionId) {
           // Change session ownership atomically with worker state.
@@ -790,8 +931,13 @@ export function createWorkerEnvironmentStore(
           ssh_host: sshEndpoint?.host ?? null,
           ssh_port: sshEndpoint?.port ?? null,
           ssh_user: sshEndpoint?.user ?? null,
-          ssh_host_key: sshEndpoint?.hostKey ?? null,
-          ssh_key_ref_json: sshEndpoint ? json(sshEndpoint.keyRef) : null,
+          ssh_host_key:
+            sshEndpoint && !("proxyCommand" in sshEndpoint) ? sshEndpoint.hostKey : null,
+          ssh_key_ref_json:
+            sshEndpoint && !("proxyCommand" in sshEndpoint) ? json(sshEndpoint.keyRef) : null,
+          ssh_proxy_command:
+            sshEndpoint && "proxyCommand" in sshEndpoint ? sshEndpoint.proxyCommand : null,
+          local_inference_route_json: localInferenceRoute ? json(localInferenceRoute) : null,
           bootstrap_bundle_hash: bootstrapReceipt?.bundleHash ?? null,
           bootstrap_openclaw_version: bootstrapReceipt?.openclawVersion ?? null,
           bootstrap_protocol_features_json: bootstrapReceipt
@@ -803,6 +949,7 @@ export function createWorkerEnvironmentStore(
           updated_at_ms: updatedAtMs,
           state_changed_at_ms: updatedAtMs,
           idle_since_at_ms: to === "idle" ? updatedAtMs : null,
+          provider_failure_observed_at_ms: null,
           last_error: "lastError" in patch ? patch.lastError?.trim() || null : null,
         });
         if (revokesCredential) {
@@ -879,6 +1026,28 @@ export function createWorkerEnvironmentStore(
         update(db, required(input.environmentId, "id"), input.state, {
           updated_at_ms: now(),
           last_error: required(input.error, "last error"),
+        }),
+      );
+    },
+    recordProviderFailure(input: {
+      environmentId: string;
+      state: WorkerEnvironmentState;
+      error: string;
+    }) {
+      return write((db) =>
+        update(db, required(input.environmentId, "id"), input.state, {
+          updated_at_ms: now(),
+          provider_failure_observed_at_ms: now(),
+          last_error: required(input.error, "last error"),
+        }),
+      );
+    },
+    clearProviderFailure(input: { environmentId: string; state: WorkerEnvironmentState }) {
+      return write((db) =>
+        update(db, required(input.environmentId, "id"), input.state, {
+          updated_at_ms: now(),
+          provider_failure_observed_at_ms: null,
+          last_error: null,
         }),
       );
     },

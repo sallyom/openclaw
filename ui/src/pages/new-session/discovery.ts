@@ -31,6 +31,11 @@ export type DraftCloudProfile = {
   providerId: string;
 };
 
+export type DraftCloudProfileCatalog = {
+  profiles: DraftCloudProfile[];
+  requiredProfileId?: string;
+};
+
 export type BrowserTarget = { nodeId: string; label: string };
 
 export function readDraftNodes(value: unknown): DraftNode[] {
@@ -89,4 +94,13 @@ export function readDraftCloudProfiles(value: unknown): DraftCloudProfile[] {
       return id && providerId ? [{ id, providerId }] : [];
     })
     .toSorted((left, right) => left.id.localeCompare(right.id));
+}
+
+export function readDraftCloudProfileCatalog(value: unknown): DraftCloudProfileCatalog {
+  const result = value as { profiles?: unknown; requiredProfileId?: unknown } | null;
+  const requiredProfileId = normalizeOptionalString(result?.requiredProfileId);
+  return {
+    profiles: readDraftCloudProfiles(result?.profiles),
+    ...(requiredProfileId ? { requiredProfileId } : {}),
+  };
 }

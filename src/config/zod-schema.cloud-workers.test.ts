@@ -31,6 +31,7 @@ describe("OpenClawSchema cloudWorkers config", () => {
                   properties?: Record<string, { title?: string; description?: string }>;
                 };
               };
+              requiredProfile?: { title?: string; description?: string };
             };
           };
         };
@@ -38,6 +39,7 @@ describe("OpenClawSchema cloudWorkers config", () => {
     ).properties?.cloudWorkers;
     const profiles = properties?.properties?.profiles;
     const profile = profiles?.additionalProperties;
+    const requiredProfile = properties?.properties?.requiredProfile;
 
     for (const [path, schema] of [
       ["cloudWorkers.profiles", profiles],
@@ -45,6 +47,7 @@ describe("OpenClawSchema cloudWorkers config", () => {
       ["cloudWorkers.profiles.*.provider", profile?.properties?.provider],
       ["cloudWorkers.profiles.*.install", profile?.properties?.install],
       ["cloudWorkers.profiles.*.settings", profile?.properties?.settings],
+      ["cloudWorkers.requiredProfile", requiredProfile],
     ] as const) {
       expect(schema?.title, path).toBe(CLOUD_WORKER_FIELD_LABELS[path]);
       expect(schema?.description, path).toBe(CLOUD_WORKER_FIELD_HELP[path]);
@@ -115,6 +118,23 @@ describe("OpenClawSchema cloudWorkers config", () => {
         },
       },
     });
+  });
+
+  it("requires a configured profile when cloud execution is mandatory", () => {
+    expect(
+      parseCloudWorkers({
+        profiles: { openshell: { provider: "openshell" } },
+        requiredProfile: "openshell",
+      }),
+    ).toMatchObject({ requiredProfile: "openshell" });
+    expect(
+      OpenClawSchema.safeParse({
+        cloudWorkers: {
+          profiles: { openshell: { provider: "openshell" } },
+          requiredProfile: "missing",
+        },
+      }).success,
+    ).toBe(false);
   });
 
   it.each([

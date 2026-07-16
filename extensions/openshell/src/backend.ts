@@ -985,13 +985,12 @@ function buildLegacyOpenShellSandboxName(scopeKey: string): string {
   // the 19-character OpenShell limit; registered remote workspaces depend on it.
   const safe = normalizeLowercaseStringOrEmpty(trimmed)
     .replace(/[^a-z0-9-]+/g, "-")
-    .replace(/^-+|-+$/g, "")
-    .slice(0, 32);
-  const hash = Array.from(trimmed).reduce(
-    (acc, char) => ((acc * 33) ^ char.charCodeAt(0)) >>> 0,
-    5381,
-  );
-  return `openclaw-${safe || "session"}-${hash.toString(16).slice(0, 8)}`;
+    .replace(/^-+|-+$/g, "");
+  // OpenShell workspace routing reserves names to 19 characters. Keep a
+  // readable scope prefix and a deterministic suffix for stable recreation.
+  const prefix = (safe || "session").slice(0, 6);
+  const hash = createHash("sha256").update(trimmed).digest("hex").slice(0, 9);
+  return `oc-${prefix}-${hash}`;
 }
 
 function resolveOpenShellSandboxName(params: {

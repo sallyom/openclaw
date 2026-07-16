@@ -2,15 +2,26 @@ import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { truncateUtf16Safe } from "@openclaw/normalization-core/utf16-slice";
 import { formatErrorMessage } from "../../infra/errors.js";
 import { redactSensitiveText } from "../../logging/redact.js";
-import type { WorkerLease, WorkerLeaseStatus, WorkerSshEndpoint } from "../../plugins/types.js";
-import { normalizeWorkerSshEndpoint } from "./store.js";
+import type {
+  WorkerLease,
+  WorkerLeaseStatus,
+  WorkerLocalInferenceRoute,
+  WorkerSshTransport,
+} from "../../plugins/types.js";
+import { normalizeWorkerLocalInferenceRoute, normalizeWorkerSshEndpoint } from "./store.js";
 
 export function inspectionStatus(value: unknown): WorkerLeaseStatus["status"] {
   if (!isRecord(value)) {
     throw new Error("Worker provider returned an invalid inspection result");
   }
   const status = value.status;
-  if (status !== "active" && status !== "destroyed" && status !== "unknown") {
+  if (
+    status !== "active" &&
+    status !== "pending" &&
+    status !== "failed" &&
+    status !== "destroyed" &&
+    status !== "unknown"
+  ) {
     throw new Error("Worker provider returned an invalid inspection status");
   }
   return status;
@@ -27,7 +38,14 @@ export function requireWorkerLease(value: unknown): WorkerLease {
   }
   return {
     leaseId: value.leaseId.trim(),
-    ssh: normalizeWorkerSshEndpoint(value.ssh as WorkerSshEndpoint),
+    ssh: normalizeWorkerSshEndpoint(value.ssh as WorkerSshTransport),
+    ...(value.inference === undefined
+      ? {}
+      : {
+          inference: normalizeWorkerLocalInferenceRoute(
+            value.inference as WorkerLocalInferenceRoute,
+          ),
+        }),
   };
 }
 

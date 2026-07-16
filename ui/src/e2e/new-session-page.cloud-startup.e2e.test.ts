@@ -18,6 +18,101 @@ import {
 const suite = createNewSessionPageE2eSuite();
 
 suite.define(() => {
+  it("locks a gateway-required cloud profile before the first turn", async () => {
+    const context = await suite.browser.newContext({
+      locale: "en-US",
+      serviceWorkers: "block",
+      viewport: { height: 900, width: 1280 },
+    });
+    const page = await context.newPage();
+    const sessionKey = "agent:cloud:required-openshell";
+    const gateway = await installMockGateway(page, {
+      defaultAgentId: "cloud",
+      workspaceGit: true,
+      methodResponses: {
+        "agents.list": {
+          agents: [
+            {
+              id: "cloud",
+              identity: { name: "Cloud" },
+              name: "Cloud",
+              workspace: WORKSPACE,
+              workspaceGit: true,
+            },
+          ],
+          defaultId: "cloud",
+          mainKey: "main",
+          scope: "agent",
+        },
+        "environments.list": {
+          environments: [],
+          profiles: [
+            { id: "aws", providerId: "crabbox" },
+            { id: "openshell", providerId: "openshell" },
+          ],
+          requiredProfileId: "openshell",
+        },
+        "fs.listDir": {
+          path: WORKSPACE,
+          parent: "/home/peter",
+          home: "/home/peter",
+          entries: [],
+        },
+        "worktrees.branches": {
+          branches: [{ kind: "local", name: "main" }],
+          defaultBranch: "main",
+          repositoryStatus: "git",
+        },
+        "sessions.create": { key: sessionKey },
+        "sessions.dispatch": {
+          ok: true,
+          key: sessionKey,
+          sessionId: "session-required-openshell",
+          placement: {
+            state: "active",
+            generation: 1,
+            createdAtMs: 1,
+            updatedAtMs: 2,
+            stateChangedAtMs: 2,
+            environmentId: "worker-openshell",
+            activeOwnerEpoch: 1,
+            workerBundleHash: "a".repeat(64),
+            workspaceBaseManifestRef: "manifest-openshell",
+            remoteWorkspaceDir: "/workspace",
+          },
+        },
+        "sessions.describe": { session: {} },
+        "sessions.send": { runId: "run-required-openshell", status: "started" },
+      },
+    });
+
+    try {
+      await page.goto(`${suite.server.baseUrl}new`);
+      await gateway.waitForRequest("environments.list");
+      const trigger = page.locator("#new-session-place-trigger");
+      await expect.poll(() => trigger.getAttribute("data-cloud-profile")).toBe("openshell");
+      await expect.poll(() => trigger.getAttribute("data-worktree")).toBe("true");
+
+      await trigger.click();
+      const place = page.locator("wa-popover.new-session-page__place-popover");
+      await expect.poll(() => place.locator('[data-value="gateway"]').count()).toBe(0);
+      await expect.poll(() => place.locator('[data-value="cloud:aws"]').count()).toBe(0);
+      await expect.poll(() => place.locator('[data-value="cloud:openshell"]').count()).toBe(1);
+      await expect.poll(() => place.locator('[data-value="worktree"]').count()).toBe(0);
+      await captureUiProof(page, "required-openshell-profile.png");
+      await page.keyboard.press("Escape");
+
+      await page.locator(".new-session-page__message").fill("run only in OpenShell");
+      await page.getByRole("button", { name: "Start thread" }).click();
+      const create = await gateway.waitForRequest("sessions.create");
+      expect(create.params).toMatchObject({ message: "", worktree: true });
+      const dispatch = await gateway.waitForRequest("sessions.dispatch");
+      expect(dispatch.params).toMatchObject({ profileId: "openshell" });
+    } finally {
+      await context.close();
+    }
+  });
+
   it("dispatches a cloud target before sending its first turn and shows placement", async () => {
     const context = await suite.browser.newContext({
       locale: "en-US",

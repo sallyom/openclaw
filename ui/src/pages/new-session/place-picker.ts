@@ -138,6 +138,7 @@ export function renderPlaceSelect(params: {
   gatewayName: string;
   cloudProfiles: DraftCloudProfile[];
   cloudProfileId: string;
+  requiredCloudProfileId: string;
   execNode: string;
   syncFolder: string;
   worktree: boolean;
@@ -328,7 +329,7 @@ export function renderPlaceSelect(params: {
                 >
               </button>
 
-              ${params.showDestinations
+              ${params.showDestinations && !params.requiredCloudProfileId
                 ? html`
                     <div class="new-session-page__menu-title">${t("newSession.places")}</div>
                     ${renderSessionMenuItem(
@@ -390,8 +391,25 @@ export function renderPlaceSelect(params: {
                         </div>`
                       : nothing}
                   `
-                : nothing}
-              ${!params.execNode && params.worktreeVisible
+                : params.requiredCloudProfileId
+                  ? html`
+                      <div class="new-session-page__menu-title">${t("newSession.places")}</div>
+                      ${renderSessionMenuItem(
+                        {
+                          value: `cloud:${params.requiredCloudProfileId}`,
+                          label: t("newSession.cloudWorker", {
+                            profile: params.requiredCloudProfileId,
+                          }),
+                          icon: icons.server,
+                          checked: true,
+                          disabled: true,
+                          onSelect: () => undefined,
+                        },
+                        params.submitting,
+                      )}
+                    `
+                  : nothing}
+              ${!params.execNode && params.worktreeVisible && !params.requiredCloudProfileId
                 ? html`
                     <div class="session-menu__separator" role="separator"></div>
                     ${renderSessionMenuItem(

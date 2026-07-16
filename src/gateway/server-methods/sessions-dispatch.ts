@@ -35,6 +35,18 @@ function resolveWorkerSessionTarget(params: {
   respond: RespondFn;
 }) {
   const cfg = params.context.getRuntimeConfig();
+  const requiredProfileId = cfg.cloudWorkers?.requiredProfile;
+  if (
+    requiredProfileId &&
+    params.profileId !== undefined &&
+    params.profileId !== requiredProfileId
+  ) {
+    respondInvalidWorkerSession(
+      params.respond,
+      `cloud worker profile ${requiredProfileId} is required by this gateway`,
+    );
+    return undefined;
+  }
   const requestedAgent = resolveRequestedGlobalAgentId(cfg, params.key, params.agentId);
   if (!requestedAgent.ok) {
     params.respond(false, undefined, requestedAgent.error);
@@ -223,6 +235,13 @@ export const sessionDispatchHandlers: GatewayRequestHandlers = {
       return;
     }
     const { target, entry, sessionId } = resolved;
+    if (resolved.cfg.cloudWorkers?.requiredProfile) {
+      respondInvalidWorkerSession(
+        respond,
+        "cannot reclaim a cloud worker while this gateway requires cloud worker execution",
+      );
+      return;
+    }
     const existingPlacement = placementReader.getMany([sessionId]).get(sessionId);
     if (existingPlacement?.state === "reclaimed") {
       respondWorkerPlacement({

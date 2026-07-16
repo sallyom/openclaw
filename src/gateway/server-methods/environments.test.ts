@@ -69,6 +69,7 @@ function mockContext(
                 zeta: { provider: "static-ssh", settings: {} },
                 aws: { provider: "crabbox", settings: {} },
               },
+              requiredProfile: "aws",
             },
           }),
         }
@@ -84,6 +85,7 @@ function workerRecord(overrides: Partial<TestWorkerRecord> = {}): TestWorkerReco
     profileSnapshot: { settings: {} },
     provisionOperationId: "provision:worker-1",
     leaseId: "lease-1",
+    localInferenceRoute: null,
     sshEndpoint: {
       host: "worker.example.test",
       port: 22,
@@ -215,6 +217,7 @@ describe("environment gateway methods", () => {
 
     expect(ok).toBe(true);
     expect(payload).toMatchObject({
+      requiredProfileId: "aws",
       profiles: [
         { id: "aws", providerId: "crabbox" },
         { id: "zeta", providerId: "static-ssh" },

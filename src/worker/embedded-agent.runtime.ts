@@ -3,14 +3,12 @@ import type {
   WorkerTranscriptMessage,
 } from "../../packages/gateway-protocol/src/schema/worker-admission.js";
 import type {
-  WorkerInferenceContext,
   WorkerInferenceModelRef,
   WorkerInferenceOptions,
 } from "../../packages/gateway-protocol/src/schema/worker-inference.js";
 import { toToolDefinitions } from "../agents/agent-tool-definition-adapter.js";
 import { createOpenClawCodingTools } from "../agents/agent-tools.js";
 import { buildBootstrapContextForFiles } from "../agents/bootstrap-files.js";
-import { createNativeModelOwnedRuntimeModel } from "../agents/embedded-agent-runner/run/setup.js";
 import { guardSessionManager } from "../agents/session-tool-result-guard-wrapper.js";
 import { AuthStorage } from "../agents/sessions/auth-storage.js";
 import { ModelRegistry } from "../agents/sessions/model-registry.js";
@@ -19,13 +17,17 @@ import { createAgentSession } from "../agents/sessions/sdk.js";
 import { SessionManager } from "../agents/sessions/session-manager.js";
 import { SettingsManager } from "../agents/sessions/settings-manager.js";
 import { DEFAULT_AGENTS_FILENAME, loadWorkspaceBootstrapFiles } from "../agents/workspace.js";
-import type { AssistantMessage, AssistantMessageEventStreamLike } from "../llm/types.js";
+import type {
+  AssistantMessage,
+  AssistantMessageEventStreamLike,
+  Context,
+  Model,
+} from "../llm/types.js";
 import { getProcessSupervisor } from "../process/supervisor/index.js";
 import { createWorkerLiveRuntime } from "./embedded-agent-live.runtime.js";
 import {
   createWorkerTranscriptRuntime,
   toAgentMessage,
-  toWorkerInferenceContext,
 } from "./embedded-agent-transcript.runtime.js";
 import { WORKER_LOCAL_TOOL_NAMES, type WorkerLocalToolName } from "./tool-authority.js";
 import { toWorkerTranscriptMessage } from "./transcript-message.js";
@@ -36,12 +38,12 @@ function toError(value: unknown, fallback: string): Error {
 
 type WorkerEmbeddedInferenceRequest = {
   modelRef: WorkerInferenceModelRef;
-  context: WorkerInferenceContext;
+  context: Context;
   options: WorkerInferenceOptions;
   signal?: AbortSignal;
 };
 
-type WorkerEmbeddedInferenceClient = {
+export type WorkerEmbeddedInferenceClient = {
   stream: (
     request: WorkerEmbeddedInferenceRequest,
   ) => AssistantMessageEventStreamLike | Promise<AssistantMessageEventStreamLike>;
@@ -63,6 +65,7 @@ type RunWorkerEmbeddedTurnParams = {
   runId: string;
   prompt: string;
   modelRef: WorkerInferenceModelRef;
+  model: Model;
   inference: WorkerEmbeddedInferenceClient;
   transcript: WorkerEmbeddedTranscriptClient;
   live: WorkerEmbeddedLiveClient;
@@ -81,10 +84,7 @@ type RunWorkerEmbeddedTurnResult = {
 export async function runWorkerEmbeddedTurn(
   params: RunWorkerEmbeddedTurnParams,
 ): Promise<RunWorkerEmbeddedTurnResult> {
-  const model = createNativeModelOwnedRuntimeModel({
-    provider: params.modelRef.provider,
-    modelId: params.modelRef.model,
-  });
+  const model = params.model;
   const authStorage = AuthStorage.inMemory({});
   const modelRegistry = ModelRegistry.inMemory(authStorage);
   const settingsManager = SettingsManager.inMemory({
@@ -175,7 +175,7 @@ export async function runWorkerEmbeddedTurn(
   session.agent.streamFn = (_model, context, options) =>
     params.inference.stream({
       modelRef: params.modelRef,
-      context: toWorkerInferenceContext(context),
+      context,
       options: structuredClone(params.inferenceOptions ?? {}),
       ...(options?.signal ? { signal: options.signal } : {}),
     });

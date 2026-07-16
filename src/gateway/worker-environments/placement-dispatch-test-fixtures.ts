@@ -106,6 +106,8 @@ export function createDispatchEnvironmentFixtures() {
     provisionOperationId: "provision-1",
     bootstrapReceipt,
     teardownTerminalState: null,
+    localInferenceRoute: null,
+    providerFailureObservedAtMs: null,
     lastError: null,
     createdAtMs: 1,
     updatedAtMs: 1,
