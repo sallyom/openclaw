@@ -6,7 +6,7 @@ import {
 } from "../../sessions/session-lifecycle-admission.js";
 import { createDeferredCore } from "../../shared/deferred.js";
 import { coordinateWorkerPlacementDispatch } from "./placement-dispatch-coordinator.js";
-import type { WorkerPlacementDispatchService } from "./placement-dispatch.js";
+import type { WorkerPlacementDispatchService } from "./placement-dispatch-service.types.js";
 import type {
   WorkerPlacementDispatchRequest,
   WorkerPlacementMoveRequest,

@@ -80,6 +80,7 @@ export type GatewayWorkerPlacementRuntimeParams = {
   placements: WorkerSessionPlacementStore;
   environments: WorkerEnvironmentService;
   gatewayNamespace: string;
+  interruptedDelegatedChildSessionKeys?: ReadonlySet<string>;
   persistAbandonedPartial?: (request: {
     sessionId: string;
     sessionKey: string;
@@ -248,6 +249,8 @@ export function createGatewayWorkerPlacementRuntime(
           (command) => isNodeCommandAllowed({ command, declaredCommands, allowlist }).ok,
         );
       },
+      isInterruptedDelegatedChild: (sessionKey) =>
+        params.interruptedDelegatedChildSessionKeys?.has(sessionKey) === true,
       ...workspaceConflictHandlers,
       ...reclaimBarriers,
       runLocalBarrier: async ({
