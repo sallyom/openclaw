@@ -4,6 +4,7 @@ import {
   makeRegistry,
 } from "../../../config/plugin-auto-enable.test-helpers.js";
 import { setPluginToolMeta } from "../../../plugins/tool-metadata.js";
+import { discoverSandboxEnvironmentCapabilities } from "../../sandbox/environment-capabilities.js";
 import { attachToolAllowlistIntersection } from "../../tool-policy.js";
 
 const mocks = vi.hoisted(() => ({
@@ -122,8 +123,16 @@ describe("prepareEmbeddedAttemptBundleTools", () => {
       dispose,
     });
 
+    input.environmentCapabilities = await discoverSandboxEnvironmentCapabilities({
+      backend: input.sandbox?.backend,
+      warn: vi.fn(),
+    });
     const result = await prepareEmbeddedAttemptBundleTools(input);
 
+    expect(discoverCapabilityRoots).toHaveBeenCalledOnce();
+    expect(mocks.createSandboxEnvironmentMcpToolRuntime).toHaveBeenCalledWith(
+      expect.objectContaining({ discoveries: input.environmentCapabilities }),
+    );
     expect(discoverCapabilityRoots).toHaveBeenCalledWith({
       roots: [{ id: "workspace", path: "/sandbox" }],
       signal: undefined,
@@ -152,9 +161,14 @@ describe("prepareEmbeddedAttemptBundleTools", () => {
       },
     } as never;
 
+    input.environmentCapabilities = await discoverSandboxEnvironmentCapabilities({
+      backend: input.sandbox?.backend,
+      warn: vi.fn(),
+    });
     await prepareEmbeddedAttemptBundleTools(input);
 
     expect(discoverCapabilityRoots).not.toHaveBeenCalled();
+    expect(mocks.createSandboxEnvironmentMcpToolRuntime).not.toHaveBeenCalled();
   });
 
   it.each([
