@@ -251,6 +251,10 @@ export function resolveSandboxConfigForAgent(
     workspaceAccess: agentSandbox?.workspaceAccess ?? agent?.workspaceAccess ?? "none",
     workspaceRoot:
       agentSandbox?.workspaceRoot ?? agent?.workspaceRoot ?? DEFAULT_SANDBOX_WORKSPACE_ROOT,
+    environment: {
+      capabilityRoots:
+        agentSandbox?.environment?.capabilityRoots ?? agent?.environment?.capabilityRoots ?? [],
+    },
     dockerTmpfsSource:
       scopedAgentDocker?.tmpfs === undefined && agent?.docker?.tmpfs === undefined
         ? "default"

@@ -2,10 +2,15 @@ import path from "node:path";
 import { setImmediate } from "node:timers/promises";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import type { SandboxEnvironmentMcpServerRequirement } from "../../config/types.agents-shared.js";
 import * as logger from "../../logger.js";
 import { OpenClawStdioClientTransport } from "../mcp-stdio-transport.js";
 import type { SandboxBackendExecSpec, SandboxBackendHandle } from "./backend-handle.types.js";
-import { createSandboxEnvironmentMcpToolRuntime } from "./environment-mcp.js";
+import type { SandboxEnvironmentCapabilityDiscovery } from "./environment-capabilities.js";
+import {
+  collectDiscoveredSandboxMcpServers,
+  createSandboxEnvironmentMcpToolRuntime,
+} from "./environment-mcp.js";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
 const fixture = path.join(repoRoot, "test/e2e/qa-lab/runtime/gateway-node-mcp.fixture.mjs");
@@ -23,7 +28,7 @@ function createBackend() {
     runtimeId: "sandbox-1",
     runtimeLabel: "sandbox-1",
     workdir: "/sandbox",
-    validateWorkdir: vi.fn(async (cwd: string) => cwd as string | null),
+    validateWorkdir: vi.fn(async (cwd: string) => cwd),
     buildExecSpec: vi.fn(async () => execSpec()),
     finalizeExec: vi.fn(async () => undefined),
     runShellCommand: vi.fn(async () => ({
@@ -37,21 +42,44 @@ async function createRuntime(
   backend: SandboxBackendHandle,
   server: Record<string, unknown> = {},
   signal?: AbortSignal,
+  authorizationServer?: SandboxEnvironmentMcpServerRequirement | null,
 ) {
+  const declaration = { command: "remote-mcp", args: ["--serve"], ...server };
+  const defaultRequirement: SandboxEnvironmentMcpServerRequirement = {
+    command: declaration.command,
+    args: declaration.args,
+    ...(typeof declaration.cwd === "string" ? { cwd: declaration.cwd } : {}),
+    ...(declaration.env && typeof declaration.env === "object"
+      ? { env: declaration.env as Record<string, string> }
+      : {}),
+  };
+  const requirement = authorizationServer === undefined ? defaultRequirement : authorizationServer;
+  const discovery: SandboxEnvironmentCapabilityDiscovery = {
+    id: "workspace",
+    path: "/sandbox",
+    mcpConfig: {
+      path: "/sandbox/.mcp.json",
+      contents: JSON.stringify({
+        mcpServers: { remote: declaration },
+      }),
+    },
+    ...(requirement
+      ? {
+          mcpAuthorizations: [
+            {
+              selectionId: "project-tools",
+              backendId: backend.id,
+              runtimeId: backend.runtimeId,
+              rootPath: backend.workdir,
+              mcpServers: { remote: requirement },
+            },
+          ],
+        }
+      : {}),
+  };
   return await createSandboxEnvironmentMcpToolRuntime({
     backend,
-    discoveries: [
-      {
-        id: "workspace",
-        path: "/sandbox",
-        mcpConfig: {
-          path: "/sandbox/.mcp.json",
-          contents: JSON.stringify({
-            mcpServers: { remote: { command: "remote-mcp", args: ["--serve"], ...server } },
-          }),
-        },
-      },
-    ],
+    servers: collectDiscoveredSandboxMcpServers([discovery], backend),
     sessionId: "session-1",
     workspaceDir: "/sandbox",
     signal,
@@ -61,6 +89,104 @@ async function createRuntime(
 afterEach(() => vi.restoreAllMocks());
 
 describe("sandbox environment MCP", () => {
+  it("does not start a workspace server without explicit source authorization", async () => {
+    const backend = createBackend();
+    const start = vi.spyOn(OpenClawStdioClientTransport.prototype, "start");
+    const send = vi.spyOn(OpenClawStdioClientTransport.prototype, "send");
+    const runtime = await createRuntime(backend, {}, undefined, null);
+    expect(runtime).toBeUndefined();
+    expect(backend.validateWorkdir).not.toHaveBeenCalled();
+    expect(backend.buildExecSpec).not.toHaveBeenCalled();
+    expect(start).not.toHaveBeenCalled();
+    expect(send).not.toHaveBeenCalled();
+    expect(backend.runShellCommand).not.toHaveBeenCalled();
+    expect(backend.finalizeExec).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["command", { command: "other", args: ["--serve"] }],
+    ["args", { command: "remote-mcp", args: ["--other"] }],
+    ["cwd", { command: "remote-mcp", args: ["--serve"], cwd: "other" }],
+    ["env", { command: "remote-mcp", args: ["--serve"], env: { MODE: "other" } }],
+  ])("does not start when the authorized %s differs", async (_field, requirement) => {
+    const backend = createBackend();
+    const runtime = await createRuntime(backend, {}, undefined, requirement);
+    expect(runtime).toBeUndefined();
+    expect(backend.validateWorkdir).not.toHaveBeenCalled();
+    expect(backend.buildExecSpec).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["backend", { backendId: "other" }],
+    ["runtime", { runtimeId: "other" }],
+    ["root", { rootPath: "/other" }],
+  ])("rejects an authorization bound to a different %s", async (_field, override) => {
+    const backend = createBackend();
+    const discovery: SandboxEnvironmentCapabilityDiscovery = {
+      id: "workspace",
+      path: "/sandbox",
+      mcpConfig: {
+        path: "/sandbox/.mcp.json",
+        contents: JSON.stringify({
+          mcpServers: { remote: { command: "remote-mcp", args: ["--serve"] } },
+        }),
+      },
+      mcpAuthorizations: [
+        {
+          selectionId: "project-tools",
+          backendId: backend.id,
+          runtimeId: backend.runtimeId,
+          rootPath: backend.workdir,
+          mcpServers: { remote: { command: "remote-mcp", args: ["--serve"] } },
+          ...override,
+        },
+      ],
+    };
+    expect(collectDiscoveredSandboxMcpServers([discovery], backend).size).toBe(0);
+    expect(backend.validateWorkdir).not.toHaveBeenCalled();
+    expect(backend.buildExecSpec).not.toHaveBeenCalled();
+  });
+
+  it("revalidates the frozen declaration immediately before transport construction", async () => {
+    const backend = createBackend();
+    const discovery: SandboxEnvironmentCapabilityDiscovery = {
+      id: "workspace",
+      path: "/sandbox",
+      mcpConfig: {
+        path: "/sandbox/.mcp.json",
+        contents: JSON.stringify({
+          mcpServers: { remote: { command: "remote-mcp", args: ["--serve"] } },
+        }),
+      },
+      mcpAuthorizations: [
+        {
+          selectionId: "project-tools",
+          backendId: backend.id,
+          runtimeId: backend.runtimeId,
+          rootPath: backend.workdir,
+          mcpServers: { remote: { command: "remote-mcp", args: ["--serve"] } },
+        },
+      ],
+    };
+    const servers = collectDiscoveredSandboxMcpServers([discovery], backend);
+    const remote = servers.get("remote");
+    expect(remote).toBeDefined();
+    if (!remote) {
+      throw new Error("missing authorized MCP fixture");
+    }
+    remote.config.command = "other";
+
+    const runtime = await createSandboxEnvironmentMcpToolRuntime({
+      backend,
+      servers,
+      sessionId: "session-1",
+      workspaceDir: "/sandbox",
+    });
+    await runtime?.dispose();
+    expect(backend.validateWorkdir).not.toHaveBeenCalled();
+    expect(backend.buildExecSpec).not.toHaveBeenCalled();
+  });
+
   it("launches discovered stdio MCP through the owning backend and finalizes it", async () => {
     const backend = createBackend();
     const runtime = await createRuntime(backend);

@@ -4,13 +4,16 @@ import {
   makeRegistry,
 } from "../../../config/plugin-auto-enable.test-helpers.js";
 import { setPluginToolMeta } from "../../../plugins/tool-metadata.js";
+import type { SandboxBackendHandle } from "../../sandbox/backend-handle.types.js";
 import { discoverSandboxEnvironmentCapabilities } from "../../sandbox/environment-capabilities.js";
+import { createSandboxTestContext } from "../../sandbox/test-fixtures.js";
 import { attachToolAllowlistIntersection } from "../../tool-policy.js";
 
 const mocks = vi.hoisted(() => ({
   createBundleLspToolRuntime: vi.fn(),
   acquireSessionMcpRuntime: vi.fn(),
   materializeBundleMcpToolsForRun: vi.fn(),
+  collectDiscoveredSandboxMcpServers: vi.fn(),
   createSandboxEnvironmentMcpToolRuntime: vi.fn(),
   applyFinalEffectiveToolPolicy: vi.fn(),
   filterRuntimeCompatibleTools: vi.fn(),
@@ -26,6 +29,7 @@ vi.mock("../../agent-bundle-mcp-tools.js", () => ({
 }));
 
 vi.mock("../../sandbox/environment-mcp.js", () => ({
+  collectDiscoveredSandboxMcpServers: mocks.collectDiscoveredSandboxMcpServers,
   createSandboxEnvironmentMcpToolRuntime: mocks.createSandboxEnvironmentMcpToolRuntime,
 }));
 
@@ -53,6 +57,7 @@ describe("prepareEmbeddedAttemptBundleTools", () => {
     mocks.createBundleLspToolRuntime.mockReset().mockResolvedValue(undefined);
     mocks.acquireSessionMcpRuntime.mockReset().mockResolvedValue(undefined);
     mocks.materializeBundleMcpToolsForRun.mockReset().mockResolvedValue(undefined);
+    mocks.collectDiscoveredSandboxMcpServers.mockReset().mockReturnValue(new Map());
     mocks.createSandboxEnvironmentMcpToolRuntime.mockReset().mockResolvedValue(undefined);
     mocks.applyFinalEffectiveToolPolicy
       .mockReset()
@@ -91,6 +96,31 @@ describe("prepareEmbeddedAttemptBundleTools", () => {
     } as unknown as Parameters<typeof prepareEmbeddedAttemptBundleTools>[0];
   }
 
+  function createBackend(overrides: Partial<SandboxBackendHandle> = {}): SandboxBackendHandle {
+    return {
+      id: "openshell",
+      runtimeId: "sandbox-1",
+      runtimeLabel: "sandbox-1",
+      workdir: "/sandbox",
+      buildExecSpec: vi.fn(),
+      runShellCommand: vi.fn(),
+      ...overrides,
+    };
+  }
+
+  function createOpenShellSandbox(backend: SandboxBackendHandle) {
+    return createSandboxTestContext({
+      overrides: {
+        backendId: backend.id,
+        runtimeId: backend.runtimeId,
+        runtimeLabel: backend.runtimeLabel,
+        containerName: backend.runtimeId,
+        containerWorkdir: backend.workdir,
+        backend,
+      },
+    });
+  }
+
   it("adds sandbox-discovered MCP tools to the ordinary default-runtime policy path", async () => {
     const input = createInput([], [{ name: "read" }]);
     const dispose = vi.fn(async () => undefined);
@@ -101,12 +131,8 @@ describe("prepareEmbeddedAttemptBundleTools", () => {
         mcpConfig: { path: "/sandbox/.mcp.json", contents: "{}" },
       },
     ]);
-    input.sandbox = {
-      runtimeId: "sandbox-1",
-      backend: {
-        id: "openshell",
-        runtimeId: "sandbox-1",
-        workdir: "/sandbox",
+    input.sandbox = createOpenShellSandbox(
+      createBackend({
         capabilities: {
           environment: {
             protocolVersion: 1,
@@ -116,22 +142,48 @@ describe("prepareEmbeddedAttemptBundleTools", () => {
           },
         },
         discoverCapabilityRoots,
-      },
-    } as never;
+      }),
+    );
     mocks.createSandboxEnvironmentMcpToolRuntime.mockResolvedValue({
       tools: [{ name: "remote__lookup" }],
       dispose,
     });
+    const environmentServers = new Map([
+      [
+        "remote",
+        {
+          root: "/sandbox",
+          config: { command: "remote-mcp" },
+          authorization: {},
+        },
+      ],
+    ]);
+    mocks.collectDiscoveredSandboxMcpServers.mockReturnValue(environmentServers);
 
     input.environmentCapabilities = await discoverSandboxEnvironmentCapabilities({
       backend: input.sandbox?.backend,
+      capabilityRoots: [
+        {
+          id: "project-tools",
+          location: { type: "workspace" },
+          mcpServers: { remote: { command: "remote-mcp" } },
+        },
+      ],
       warn: vi.fn(),
     });
+    expect(input.environmentCapabilities[0]?.mcpAuthorizations).toEqual([
+      expect.objectContaining({
+        selectionId: "project-tools",
+        backendId: "openshell",
+        runtimeId: "sandbox-1",
+        rootPath: "/sandbox",
+      }),
+    ]);
     const result = await prepareEmbeddedAttemptBundleTools(input);
 
     expect(discoverCapabilityRoots).toHaveBeenCalledOnce();
     expect(mocks.createSandboxEnvironmentMcpToolRuntime).toHaveBeenCalledWith(
-      expect.objectContaining({ discoveries: input.environmentCapabilities }),
+      expect.objectContaining({ servers: environmentServers }),
     );
     expect(discoverCapabilityRoots).toHaveBeenCalledWith({
       roots: [{ id: "workspace", path: "/sandbox" }],
@@ -145,6 +197,74 @@ describe("prepareEmbeddedAttemptBundleTools", () => {
     expect(dispose).toHaveBeenCalledOnce();
   });
 
+  it("uses an authorized environment namespace to activate exact tool-prefix requests", async () => {
+    const input = createInput([], []);
+    input.attempt.toolsAllow = ["remote__*"];
+    input.preparedToolBase.effectiveToolsAllow = input.attempt.toolsAllow;
+    input.sandbox = createOpenShellSandbox(createBackend());
+    input.environmentCapabilities = [{ id: "workspace", path: "/sandbox" }];
+    mocks.collectDiscoveredSandboxMcpServers.mockReturnValue(
+      new Map([
+        [
+          "remote",
+          {
+            root: "/sandbox",
+            config: { command: "remote-mcp" },
+            authorization: {},
+          },
+        ],
+      ]),
+    );
+    mocks.createSandboxEnvironmentMcpToolRuntime.mockResolvedValue({
+      tools: [{ name: "remote__lookup" }],
+      dispose: vi.fn(async () => undefined),
+    });
+
+    const result = await prepareEmbeddedAttemptBundleTools(input);
+
+    expect(mocks.createSandboxEnvironmentMcpToolRuntime).toHaveBeenCalledOnce();
+    expect(result.uncompactedEffectiveTools.map((tool) => tool.name)).toEqual(["remote__lookup"]);
+  });
+
+  it("does not activate an environment namespace without source authorization", async () => {
+    const input = createInput([], []);
+    input.attempt.toolsAllow = ["remote__*"];
+    input.sandbox = createOpenShellSandbox(createBackend());
+    input.environmentCapabilities = [{ id: "workspace", path: "/sandbox" }];
+
+    await prepareEmbeddedAttemptBundleTools(input);
+
+    expect(mocks.createSandboxEnvironmentMcpToolRuntime).not.toHaveBeenCalled();
+  });
+
+  it("keeps source authorization separate from final tool visibility policy", async () => {
+    const input = createInput([], []);
+    input.preparedToolBase.effectiveToolsAllow = [];
+    input.sandbox = createOpenShellSandbox(createBackend());
+    input.environmentCapabilities = [{ id: "workspace", path: "/sandbox" }];
+    mocks.collectDiscoveredSandboxMcpServers.mockReturnValue(
+      new Map([
+        [
+          "remote",
+          {
+            root: "/sandbox",
+            config: { command: "remote-mcp" },
+            authorization: {},
+          },
+        ],
+      ]),
+    );
+    mocks.createSandboxEnvironmentMcpToolRuntime.mockResolvedValue({
+      tools: [{ name: "remote__lookup" }],
+      dispose: vi.fn(async () => undefined),
+    });
+
+    const result = await prepareEmbeddedAttemptBundleTools(input);
+
+    expect(mocks.createSandboxEnvironmentMcpToolRuntime).toHaveBeenCalledOnce();
+    expect(result.uncompactedEffectiveTools).toEqual([]);
+  });
+
   it.each([
     { protocolVersion: 2, process: true, filesystem: true, capabilityRootDiscovery: true },
     { protocolVersion: 1, process: false, filesystem: true, capabilityRootDiscovery: true },
@@ -153,13 +273,12 @@ describe("prepareEmbeddedAttemptBundleTools", () => {
   ])("requires the complete environment capability contract: %o", async (environment) => {
     const input = createInput([], []);
     const discoverCapabilityRoots = vi.fn();
-    input.sandbox = {
-      runtimeId: "sandbox-1",
-      backend: {
-        capabilities: { environment },
+    input.sandbox = createOpenShellSandbox(
+      createBackend({
+        capabilities: { environment } as SandboxBackendHandle["capabilities"],
         discoverCapabilityRoots,
-      },
-    } as never;
+      }),
+    );
 
     input.environmentCapabilities = await discoverSandboxEnvironmentCapabilities({
       backend: input.sandbox?.backend,

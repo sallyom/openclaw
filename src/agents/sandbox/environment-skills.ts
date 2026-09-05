@@ -194,7 +194,6 @@ export async function prepareSandboxEnvironmentSkills(params: {
   }
 }
 
-/** Keep explicit/native skills first and apply the existing policy and formatter to additions. */
 export function mergeSandboxEnvironmentSkillCatalog(params: {
   skillsPrompt: string;
   candidates: Skill[];
@@ -207,7 +206,7 @@ export function mergeSandboxEnvironmentSkillCatalog(params: {
   warn: (message: string) => void;
 }): { skillsPrompt: string; candidates: Skill[] } {
   if (params.environmentEntries.length === 0) {
-    return params;
+    return { skillsPrompt: params.skillsPrompt, candidates: params.candidates };
   }
   const nativeByName = new Map(params.candidates.map((skill) => [skill.name, skill]));
   const used = new Set(nativeByName.keys());
